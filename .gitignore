@@ -1,4 +1,7 @@
 node_modules/
 .env
+.env.local
 data/state.json
+data/examples/
 *.log
+.claude/settings.local.json

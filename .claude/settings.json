@@ -1,0 +1,28 @@
+{
+  "model": "sonnet",
+  "permissions": {
+    "deny": [
+      "Read(./.env)",
+      "Edit(./.env)",
+      "Read(./.env.local)",
+      "Edit(./.env.local)",
+      "Read(./data/state.json)",
+      "Edit(./data/state.json)",
+      "Read(./data/**)",
+      "Edit(./data/**)"
+    ],
+    "allow": [
+      "Bash(npm run test:intents)",
+      "Bash(npm run test:intents *)",
+      "Bash(npm test)",
+      "Bash(npm test *)",
+      "Bash(node --check *)",
+      "Bash(git status)",
+      "Bash(git status *)",
+      "Bash(git diff)",
+      "Bash(git diff *)",
+      "Bash(git log)",
+      "Bash(git log *)"
+    ]
+  }
+}

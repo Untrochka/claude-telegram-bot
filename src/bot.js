@@ -10,6 +10,7 @@ import {
   deleteBusinessMessages,
   editMessageText,
   answerCallbackQuery,
+  setMyCommands,
 } from "./telegram.js";
 import {
   getLastUpdateId,
@@ -43,6 +44,7 @@ import {
 import { generateReply, generateSecretaryReply, generateContentReply } from "./claudeClient.js";
 import { getTemplate } from "./templates.js";
 import { checkPrices } from "./prices.js";
+import { MENU_COMMANDS, buildHelpText } from "./commands.js";
 
 console.log(`[bot] Запуск. Режим Claude: ${config.claudeMode}${config.dryRun ? " (DRY_RUN)" : ""}`);
 
@@ -543,8 +545,13 @@ async function handlePersonalMessage(msg) {
   if (text === "/start") {
     await sendMessage(
       msg.chat.id,
-      "Секретарь на связи. Пиши как есть — код, тексты, вопросы. Команды: /todo, /remind, /chats, /chat <id>, /day (/day stop), /auto (/auto on, /auto off), /help."
+      `Секретарь на связи. Пиши как есть — код, тексты, вопросы. Вот все команды:\n\n${buildHelpText()}`
     );
+    return;
+  }
+
+  if (text === "/help") {
+    await sendMessage(msg.chat.id, buildHelpText());
     return;
   }
 
@@ -632,6 +639,19 @@ async function pollLoop() {
     }
   }
 }
+
+// Регистрируем команды в меню Telegram только для личного чата с владельцем
+// (scope: chat) — чужим, кто напишет боту напрямую, список команд не покажется.
+// Если вызов упадёт (например, сеть недоступна) — не мешаем боту стартовать.
+async function registerCommands() {
+  try {
+    await setMyCommands(MENU_COMMANDS, { type: "chat", chat_id: config.ownerTelegramId });
+  } catch (err) {
+    console.error("[bot] Не удалось зарегистрировать команды (setMyCommands):", err.message);
+  }
+}
+
+registerCommands();
 
 pollLoop().catch((err) => {
   console.error("[bot] Критическая ошибка, бот остановлен:", err);

@@ -433,7 +433,7 @@ async function runContentTurn(chatId, incomingText) {
 
   try {
     const history = getHistory(key);
-    const { raw, ready, message, untra, vlog } = await generateContentReply(history.slice(0, -1), incomingText);
+    const { raw, ready, message, untra, vlog, notes } = await generateContentReply(history.slice(0, -1), incomingText);
     if (!raw) {
       console.warn("[bot] Пустой ответ от контент-агента.");
       return;
@@ -479,6 +479,12 @@ async function runContentTurn(chatId, incomingText) {
           { text: "🗑 Не постить", callback_data: `d:x:${draftId}` },
         ],
       ]);
+    }
+
+    // Подсказка к посту (угол, визуал, запасной хук) — после самих постов,
+    // в канал не публикуется.
+    if (notes) {
+      await sendMessage(chatId, `💡 К посту:\n${notes}`);
     }
   } catch (err) {
     console.error("[bot] Ошибка контент-агента:", err.message);

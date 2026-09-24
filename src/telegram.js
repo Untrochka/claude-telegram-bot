@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { config } from "./config.js";
 
 const API = `https://api.telegram.org/bot${config.botToken}`;
@@ -63,4 +65,40 @@ export async function editMessageText(chatId, messageId, text) {
 
 export async function answerCallbackQuery(callbackQueryId, text) {
   return call("answerCallbackQuery", { callback_query_id: callbackQueryId, text });
+}
+
+// Альбом фото для intent: examples (product: catalog), см. data/examples/.
+// Multipart через встроенные FormData/Blob (Node 18+), без новых зависимостей.
+export async function sendPhotoAlbum(connectionId, chatId, filePaths) {
+  const form = new FormData();
+  form.append("business_connection_id", connectionId);
+  form.append("chat_id", String(chatId));
+  const media = filePaths.map((filePath, i) => ({ type: "photo", media: `attach://file${i}` }));
+  form.append("media", JSON.stringify(media));
+  filePaths.forEach((filePath, i) => {
+    const buf = fs.readFileSync(filePath);
+    form.append(`file${i}`, new Blob([buf]), path.basename(filePath));
+  });
+  const res = await fetch(`${API}/sendMediaGroup`, { method: "POST", body: form });
+  const data = await res.json();
+  if (!data.ok) {
+    throw new Error(`Telegram API sendMediaGroup failed: ${data.description || res.status}`);
+  }
+  return data.result;
+}
+
+// Удаление уже отправленных клиенту сообщений (кнопка "🗑 Удалить у клиента"
+// после автоответа). Работает только если бизнес-подключение дало право
+// can_delete_sent_messages — это отдельно проверяется в bot.js/state.js.
+export async function deleteBusinessMessages(connectionId, messageIds) {
+  return call("deleteBusinessMessages", {
+    business_connection_id: connectionId,
+    message_ids: messageIds,
+  });
+}
+
+// Регистрация команд, чтобы они предлагались при вводе "/" в Telegram.
+// scope — например { type: "chat", chat_id } для персонального меню владельца.
+export async function setMyCommands(commands, scope) {
+  return call("setMyCommands", scope ? { commands, scope } : { commands });
 }

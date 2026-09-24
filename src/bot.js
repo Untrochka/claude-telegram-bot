@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { config } from "./config.js";
 import {
   getUpdates,
@@ -5,6 +6,8 @@ import {
   sendBusinessMessage,
   sendMessage,
   sendMessageWithButtons,
+  sendPhotoAlbum,
+  deleteBusinessMessages,
   editMessageText,
   answerCallbackQuery,
 } from "./telegram.js";
@@ -15,6 +18,8 @@ import {
   pushHistory,
   getCachedOwnerId,
   cacheOwnerId,
+  cacheConnectionRights,
+  getConnectionRights,
   createDraft,
   getDraft,
   deleteDraft,
@@ -27,10 +32,141 @@ import {
   clearHistory,
   isContentModeActive,
   setContentMode,
+  hasAzizhonEverReplied,
+  getLastAzizhonTs,
+  canAutoSendNow,
+  recordAutoSend,
+  getTodayAutoSendCount,
+  getAutoSendToggle,
+  setAutoSendToggle,
 } from "./state.js";
 import { generateReply, generateSecretaryReply, generateContentReply } from "./claudeClient.js";
+import { getTemplate } from "./templates.js";
+import { checkPrices } from "./prices.js";
 
-console.log(`[bot] Запуск. Режим Claude: ${config.claudeMode}`);
+console.log(`[bot] Запуск. Режим Claude: ${config.claudeMode}${config.dryRun ? " (DRY_RUN)" : ""}`);
+
+// Азизхон не писал в чат последние 15 минут — считаем, что диалог сейчас не
+// ведёт он сам, автоответ можно рассматривать (см. CLAUDE_CODE_TASK.md п. 3.4).
+const AUTO_SEND_QUIET_MS = 15 * 60 * 1000;
+
+function isAutoSendActive() {
+  const override = getAutoSendToggle();
+  return override === undefined || override === null ? config.autoSendEnabled : override;
+}
+
+// Единая точка отправки сообщения клиенту. В DRY_RUN ничего реально не уходит —
+// только лог и уведомление владельцу, что было бы отправлено (ни автоответ,
+// ни ручное подтверждение ✅ в этом режиме клиента не трогают).
+async function deliverToCustomer(connectionId, chatId, text) {
+  if (config.dryRun) {
+    console.log(`[bot] DRY_RUN: не отправляю клиенту в чат ${chatId}.`);
+    await sendMessage(config.ownerTelegramId, `🧪 DRY_RUN — отправил бы клиенту (чат ${chatId}):\n${text}`);
+    return null;
+  }
+  return sendBusinessMessage(connectionId, chatId, text);
+}
+
+async function sendCatalogExamplesAlbum(connectionId, chatId) {
+  if (config.dryRun) return;
+  let files;
+  try {
+    files = fs.readdirSync(config.examplesDir).filter((f) => /\.(jpe?g|png)$/i.test(f));
+  } catch {
+    return; // папки нет — просто нечего слать
+  }
+  if (!files.length) return;
+  try {
+    await sendPhotoAlbum(
+      connectionId,
+      chatId,
+      files.map((f) => `${config.examplesDir}/${f}`)
+    );
+  } catch (err) {
+    console.error("[bot] Не удалось отправить альбом примеров:", err.message);
+  }
+}
+
+function hasNewCustomerMessageSince(chatId, ts) {
+  const history = getHistory(chatId);
+  const last = history[history.length - 1];
+  return Boolean(last && last.role === "customer" && last.ts > ts);
+}
+
+function urgencyLabelFor(intent) {
+  return { urgent: "🔴 Срочно", spam: "⚪ Спам/не по делу" }[intent] || "🟡 Обычное";
+}
+
+async function sendDraftCard(connectionId, chatId, intent, customerText, replyText, extraLine = "") {
+  const draftId = createDraft({ kind: "business", connectionId, chatId, text: replyText });
+  const preview = `${urgencyLabelFor(intent)}\n${extraLine}💬 Клиент (чат ${chatId}):\n${customerText}\n\n✏️ Черновик ответа (${intent}):\n${replyText}`;
+  await sendMessageWithButtons(config.ownerTelegramId, preview, [
+    [
+      { text: "✅ Отправить", callback_data: `d:s:${draftId}` },
+      { text: "🗑 Не отправлять", callback_data: `d:x:${draftId}` },
+    ],
+  ]);
+  console.log(`[bot] Черновик #${draftId} (${intent}) на утверждение (чат ${chatId}).`);
+}
+
+// Очередь неблокирующей задержки перед автоотправкой (60-180с, см. п. 3.4),
+// проверяется в основном цикле рядом с checkReminders, чтобы не тормозить
+// long polling.
+const autoSendQueue = [];
+
+function scheduleAutoSend(item) {
+  const delayMs = (60 + Math.random() * 120) * 1000;
+  autoSendQueue.push({ ...item, sendAt: Date.now() + delayMs, queuedAt: Date.now() });
+  console.log(`[bot] Автоответ intent=${item.intent} в чат ${item.chatId} запланирован через ${Math.round(delayMs / 1000)}с.`);
+}
+
+async function executeAutoSend(item) {
+  const { connectionId, chatId, intent, product, customerText, replyText, queuedAt } = item;
+
+  const stillOk =
+    isAutoSendActive() &&
+    getLastAzizhonTs(chatId) <= queuedAt &&
+    !hasNewCustomerMessageSince(chatId, queuedAt) &&
+    canAutoSendNow(chatId, intent);
+
+  if (!stillOk) {
+    console.log(`[bot] Автоответ intent=${intent} в чат ${chatId} отменён, превращаю в черновик.`);
+    await sendDraftCard(connectionId, chatId, intent, customerText, replyText, "⏸ Автоответ отменён (что-то изменилось), нужно решение вручную.\n");
+    return;
+  }
+
+  try {
+    if (intent === "examples" && product === "catalog") {
+      await sendCatalogExamplesAlbum(connectionId, chatId);
+    }
+    const sent = await deliverToCustomer(connectionId, chatId, replyText);
+    pushHistory(chatId, "azizhon", replyText);
+    recordAutoSend(chatId, intent);
+
+    const buttons = [];
+    if (sent?.message_id && getConnectionRights(connectionId)) {
+      const delDraftId = createDraft({ kind: "auto_sent", connectionId, chatId, messageId: sent.message_id });
+      buttons.push({ text: "🗑 Удалить у клиента", callback_data: `d:del:${delDraftId}` });
+    }
+    const card = `🤖 Отправлено автоматически (${intent})\n💬 Клиент (чат ${chatId}):\n${customerText}\n\n✏️ Ответ:\n${replyText}`;
+    if (buttons.length) {
+      await sendMessageWithButtons(config.ownerTelegramId, card, [buttons]);
+    } else {
+      await sendMessage(config.ownerTelegramId, card);
+    }
+  } catch (err) {
+    console.error(`[bot] Ошибка автоотправки в чате ${chatId}:`, err.message);
+  }
+}
+
+async function processAutoSendQueue() {
+  const now = Date.now();
+  const ready = autoSendQueue.filter((item) => item.sendAt <= now);
+  for (const item of ready) {
+    autoSendQueue.splice(autoSendQueue.indexOf(item), 1);
+    await executeAutoSend(item);
+  }
+}
 
 async function resolveOwnerId(connectionId) {
   const cached = getCachedOwnerId(connectionId);
@@ -38,7 +174,22 @@ async function resolveOwnerId(connectionId) {
   const conn = await getBusinessConnection(connectionId);
   const ownerId = conn.user?.id;
   if (ownerId) cacheOwnerId(connectionId, ownerId);
+  cacheConnectionRights(connectionId, conn.rights?.can_delete_sent_messages);
   return ownerId;
+}
+
+async function notifyNonTextMessage(chatId, msg) {
+  const kind = msg.voice
+    ? "🎤 Голосовое"
+    : msg.video_note
+      ? "🎥 Кружок"
+      : msg.video
+        ? "🎥 Видео"
+        : msg.photo
+          ? "📷 Фото без подписи"
+          : null;
+  if (!kind) return; // стикеры и прочее нестандартное — как и раньше, молча пропускаем
+  await sendMessage(config.ownerTelegramId, `${kind} от клиента в чате ${chatId} — ответь сам, бот не отвечает.`);
 }
 
 async function handleBusinessMessage(msg) {
@@ -46,7 +197,7 @@ async function handleBusinessMessage(msg) {
   const chatId = msg.chat.id;
   const text = msg.text || msg.caption;
 
-  if (!connectionId || !text) return; // не текстовое сообщение или что-то нестандартное — пропускаем
+  if (!connectionId) return;
 
   const ownerId = await resolveOwnerId(connectionId);
 
@@ -59,8 +210,13 @@ async function handleBusinessMessage(msg) {
 
   if (msg.from?.id === ownerId) {
     // Азизхон сам ответил в этом чате вручную — просто запоминаем для контекста, не отвечаем.
-    pushHistory(chatId, "azizhon", text);
+    if (text) pushHistory(chatId, "azizhon", text);
     console.log(`[bot] Азизхон ответил лично в чате ${chatId}, бот молчит.`);
+    return;
+  }
+
+  if (!text) {
+    await notifyNonTextMessage(chatId, msg);
     return;
   }
 
@@ -69,21 +225,45 @@ async function handleBusinessMessage(msg) {
 
   try {
     const history = getHistory(chatId);
-    const { urgency, text: reply } = await generateReply(history.slice(0, -1), text);
-    if (!reply) {
+    const { intent, product, text: modelReply } = await generateReply(history.slice(0, -1), text);
+
+    if (intent === "autoreply") {
+      await sendMessage(
+        config.ownerTelegramId,
+        `🤖 Автоответчик клиента в чате ${chatId} — ждём живого человека.\n💬 ${text}`
+      );
+      return;
+    }
+
+    let outgoingText = modelReply;
+    let priceWarning = "";
+
+    if (intent === "refusal" || intent === "soft_no" || intent === "examples") {
+      outgoingText = getTemplate(intent, product) || modelReply;
+    } else if (intent === "price") {
+      const { ok } = checkPrices(modelReply);
+      if (!ok) priceWarning = "⚠️ цена не из прайса — проверь вручную.\n";
+    }
+
+    if (!outgoingText) {
       console.warn("[bot] Пустой ответ от Claude, пропускаю отправку.");
       return;
     }
-    const draftId = createDraft({ kind: "business", connectionId, chatId, text: reply });
-    const urgencyLabel = { urgent: "🔴 Срочно", spam: "⚪ Спам/не по делу" }[urgency] || "🟡 Обычное";
-    const preview = `${urgencyLabel}\n💬 Клиент (чат ${chatId}):\n${text}\n\n✏️ Черновик ответа:\n${reply}`;
-    await sendMessageWithButtons(config.ownerTelegramId, preview, [
-      [
-        { text: "✅ Отправить", callback_data: `d:s:${draftId}` },
-        { text: "🗑 Не отправлять", callback_data: `d:x:${draftId}` },
-      ],
-    ]);
-    console.log(`[bot] Черновик #${draftId} на утверждение (чат ${chatId}).`);
+
+    const eligibleForAutoSend =
+      !priceWarning &&
+      config.autoSendIntents.includes(intent) &&
+      isAutoSendActive() &&
+      hasAzizhonEverReplied(chatId) &&
+      Date.now() - getLastAzizhonTs(chatId) > AUTO_SEND_QUIET_MS &&
+      canAutoSendNow(chatId, intent);
+
+    if (eligibleForAutoSend) {
+      scheduleAutoSend({ connectionId, chatId, intent, product, customerText: text, replyText: outgoingText });
+      return;
+    }
+
+    await sendDraftCard(connectionId, chatId, intent, text, outgoingText, priceWarning);
   } catch (err) {
     console.error(`[bot] Ошибка генерации ответа в чате ${chatId}:`, err.message);
   }
@@ -114,7 +294,7 @@ async function handleCallbackQuery(query) {
         await sendMessage(draft.channelId, draft.text);
         console.log(`[bot] Пост #${draftId} опубликован в ${draft.channelLabel} (${draft.channelId}).`);
       } else {
-        await sendBusinessMessage(draft.connectionId, draft.chatId, draft.text);
+        await deliverToCustomer(draft.connectionId, draft.chatId, draft.text);
         pushHistory(draft.chatId, "azizhon", draft.text);
         console.log(`[bot] Черновик #${draftId} отправлен в чат ${draft.chatId}.`);
       }
@@ -131,6 +311,18 @@ async function handleCallbackQuery(query) {
     await editMessageText(cardChatId, cardMessageId, `${cardText}\n\n${rejectLabel}`);
     await answerCallbackQuery(query.id, isPost ? "Не опубликовано" : "Отклонено");
     console.log(`[bot] Черновик #${draftId} отклонён.`);
+  } else if (action === "del") {
+    // Кнопка "🗑 Удалить у клиента" после автоответа — draft здесь хранит
+    // не текст на утверждение, а connectionId/messageId уже отправленного сообщения.
+    try {
+      await deleteBusinessMessages(draft.connectionId, [draft.messageId]);
+      deleteDraft(draftId);
+      await editMessageText(cardChatId, cardMessageId, `${cardText}\n\n🗑 Удалено у клиента.`);
+      await answerCallbackQuery(query.id, "Удалено");
+    } catch (err) {
+      console.error(`[bot] Ошибка удаления автоответа #${draftId}:`, err.message);
+      await answerCallbackQuery(query.id, "Не удалось удалить, см. логи");
+    }
   } else {
     await answerCallbackQuery(query.id);
   }
@@ -314,6 +506,29 @@ async function checkReminders() {
   }
 }
 
+async function handleAutoCommand(chatId, text) {
+  const arg = text.slice("/auto".length).trim().toLowerCase();
+
+  if (arg === "on") {
+    setAutoSendToggle(true);
+    await sendMessage(chatId, "Автоответы включены.");
+    return;
+  }
+  if (arg === "off") {
+    setAutoSendToggle(false);
+    await sendMessage(chatId, "Автоответы выключены.");
+    return;
+  }
+
+  const active = isAutoSendActive();
+  const count = getTodayAutoSendCount();
+  const dryRunNote = config.dryRun ? "\n🧪 DRY_RUN включён — реальных отправок клиентам сейчас нет." : "";
+  await sendMessage(
+    chatId,
+    `Автоответы сейчас ${active ? "включены ✅" : "выключены ⛔"}.\nОтправлено автоматически сегодня: ${count}.\n\n/auto on — включить, /auto off — выключить.${dryRunNote}`
+  );
+}
+
 async function handlePersonalMessage(msg) {
   if (msg.chat.type !== "private" || msg.from?.id !== config.ownerTelegramId) {
     console.warn(`[bot] Личное сообщение от чужого id ${msg.from?.id}, игнорирую.`);
@@ -328,8 +543,13 @@ async function handlePersonalMessage(msg) {
   if (text === "/start") {
     await sendMessage(
       msg.chat.id,
-      "Секретарь на связи. Пиши как есть — код, тексты, вопросы. Команды: /todo, /remind, /chats, /chat <id>, /day (/day stop)."
+      "Секретарь на связи. Пиши как есть — код, тексты, вопросы. Команды: /todo, /remind, /chats, /chat <id>, /day (/day stop), /auto (/auto on, /auto off), /help."
     );
+    return;
+  }
+
+  if (/^\/auto(\s|$)/i.test(text)) {
+    await handleAutoCommand(msg.chat.id, text);
     return;
   }
 
@@ -386,6 +606,7 @@ async function pollLoop() {
 
   while (true) {
     await checkReminders();
+    await processAutoSendQueue();
 
     let updates;
     try {

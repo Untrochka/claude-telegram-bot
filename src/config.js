@@ -18,6 +18,16 @@ if (!Number.isInteger(ownerTelegramId)) {
   throw new Error("OWNER_TELEGRAM_ID должен быть числом (твой Telegram user id, узнать у @userinfobot)");
 }
 
+// AUTO_SEND_ENABLED не задан в .env -> считаем "включено" (можно выключить
+// без правки .env через /auto off, см. state.js/bot.js).
+const autoSendEnabledRaw = process.env.AUTO_SEND_ENABLED;
+const autoSendEnabled = autoSendEnabledRaw === undefined ? true : autoSendEnabledRaw.trim().toLowerCase() === "true";
+
+const autoSendIntents = (process.env.AUTO_SEND_INTENTS || "refusal,soft_no,price,examples")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 export const config = {
   botToken: required("BOT_TOKEN"),
   ownerTelegramId,
@@ -29,8 +39,14 @@ export const config = {
   assistantPersonaPath: path.join(__dirname, "assistant-persona.md"),
   contentPersonaPath: path.join(__dirname, "content-persona.md"),
   statePath: path.join(ROOT, "data", "state.json"),
+  examplesDir: path.join(ROOT, "data", "examples"),
   untraChannelId: process.env.UNTRA_CHANNEL_ID || "@untra_dev",
   vlogChannelId: process.env.VLOG_CHANNEL_ID || "@untra_dev_vlog",
+  // true — ничего не отправлять клиентам по-настоящему (ни автоответ, ни
+  // ручное подтверждение ✅), только логировать и уведомлять владельца.
+  dryRun: (process.env.DRY_RUN || "false").trim().toLowerCase() === "true",
+  autoSendEnabled,
+  autoSendIntents,
 };
 
 if (config.claudeMode === "api" && !config.anthropicApiKey) {

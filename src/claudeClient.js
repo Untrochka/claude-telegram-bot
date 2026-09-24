@@ -162,16 +162,17 @@ export async function generateSecretaryReply(history, incomingText) {
 }
 
 // См. content-persona.md — первая строка READY_TO_POST означает, что дальше
-// идут готовые посты в блоках ===UNTRA===/===VLOG===, иначе это просто
-// продолжение интервью (вопросы/уточнения), без парсинга.
-function parseContentReply(raw) {
+// идут готовые посты в блоках ===UNTRA===/===VLOG=== и подсказка к посту
+// в ===NOTES===, иначе это просто продолжение интервью, без парсинга.
+// Экспортируется для scripts/test-day.js.
+export function parseContentReply(raw) {
   const trimmed = raw.trim();
   if (!trimmed.startsWith("READY_TO_POST")) {
     return { ready: false, message: trimmed };
   }
-  const untra = trimmed.match(/===UNTRA===\s*([\s\S]*?)(?=\n===VLOG===|$)/)?.[1]?.trim() || null;
-  const vlog = trimmed.match(/===VLOG===\s*([\s\S]*)$/)?.[1]?.trim() || null;
-  return { ready: true, untra, vlog };
+  const block = (name) =>
+    trimmed.match(new RegExp(`===${name}===\\s*([\\s\\S]*?)(?=\\n===(?:UNTRA|VLOG|NOTES)===|$)`))?.[1]?.trim() || null;
+  return { ready: true, untra: block("UNTRA"), vlog: block("VLOG"), notes: block("NOTES") };
 }
 
 export async function generateContentReply(history, incomingText) {

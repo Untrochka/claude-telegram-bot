@@ -110,16 +110,38 @@ async function callViaApi(prompt, personaPath, maxTokens) {
   return text.trim();
 }
 
-// Первая строка ответа — метка срочности (см. persona.md), остальное — сам ответ клиенту.
-const URGENCY_LABELS = new Set(["urgent", "normal", "spam"]);
+// Формат ответа (см. persona.md): первая строка "intent: <значение>", вторая
+// "product: <значение>", третья пустая, дальше сам текст ответа клиенту.
+// Если формат не распознан — считаем intent/product "other" и берём в текст
+// весь ответ целиком (лучше отдать это черновиком на утверждение, чем потерять).
+const INTENTS = new Set([
+  "refusal",
+  "soft_no",
+  "price",
+  "examples",
+  "redirect",
+  "interested",
+  "autoreply",
+  "urgent",
+  "spam",
+  "other",
+]);
+const PRODUCTS = new Set(["catalog", "barber", "other"]);
 
-function parseTriagedReply(raw) {
-  const firstLineEnd = raw.indexOf("\n");
-  const firstLine = (firstLineEnd === -1 ? raw : raw.slice(0, firstLineEnd)).trim().toLowerCase();
-  if (firstLineEnd !== -1 && URGENCY_LABELS.has(firstLine)) {
-    return { urgency: firstLine, text: raw.slice(firstLineEnd + 1).trim() };
+// Экспортируется отдельно для scripts/test-intents.js — там нужен доступ
+// к чистому парсеру на заготовленных ответах, без реального вызова Claude.
+export function parseTriagedReply(raw) {
+  const match = raw.match(/^intent:\s*(\S+)\s*\nproduct:\s*(\S+)\s*\n\s*\n([\s\S]*)$/i);
+  if (!match) {
+    return { intent: "other", product: "other", text: raw.trim() };
   }
-  return { urgency: "normal", text: raw.trim() };
+  const intentRaw = match[1].trim().toLowerCase();
+  const productRaw = match[2].trim().toLowerCase();
+  return {
+    intent: INTENTS.has(intentRaw) ? intentRaw : "other",
+    product: PRODUCTS.has(productRaw) ? productRaw : "other",
+    text: match[3].trim(),
+  };
 }
 
 export async function generateReply(history, incomingText) {

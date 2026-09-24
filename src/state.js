@@ -44,6 +44,13 @@ export function pushHistory(chatId, role, text) {
   state.chats[chatId].history.push({ role, text, ts: Date.now() });
   const trimmed = state.chats[chatId].history.slice(-config.historyLimit);
   state.chats[chatId].history = trimmed;
+  // "azizhon" в чате без префикса (не secretary:/content:) — это реальный
+  // клиентский чат, в котором он сам ответил. Флаг переживает обрезку
+  // истории и нужен для защиты автоотправки (см. canAutoSendNow ниже).
+  if (role === "azizhon" && !String(chatId).includes(":")) {
+    state.chats[chatId].azizhonEverReplied = true;
+    state.chats[chatId].lastAzizhonTs = Date.now();
+  }
   saveState(state);
 }
 
@@ -147,4 +154,77 @@ export function markTaskNotified(id) {
   if (!state.tasks?.[id]) return;
   state.tasks[id].notified = true;
   saveState(state);
+}
+
+// --- Автоответы: защита от ошибок (см. CLAUDE_CODE_TASK.md п. 3.4) ---
+
+export function hasAzizhonEverReplied(chatId) {
+  return Boolean(state.chats[chatId]?.azizhonEverReplied);
+}
+
+export function getLastAzizhonTs(chatId) {
+  return state.chats[chatId]?.lastAzizhonTs || 0;
+}
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function getAutoSendRecord(chatId) {
+  return state.chats[chatId]?.autoSends || { sentIntents: [], dailyDate: null, dailyCount: 0 };
+}
+
+// Каждый intent — максимум один автоответ на чат, максимум 2 автоответа
+// на чат в сутки.
+export function canAutoSendNow(chatId, intent) {
+  const record = getAutoSendRecord(chatId);
+  const dailyCount = record.dailyDate === todayKey() ? record.dailyCount : 0;
+  return !record.sentIntents.includes(intent) && dailyCount < 2;
+}
+
+export function recordAutoSend(chatId, intent) {
+  if (!state.chats[chatId]) state.chats[chatId] = { history: [] };
+  const chat = state.chats[chatId];
+  chat.autoSends = chat.autoSends || { sentIntents: [], dailyDate: null, dailyCount: 0 };
+  const today = todayKey();
+  if (chat.autoSends.dailyDate !== today) {
+    chat.autoSends.dailyDate = today;
+    chat.autoSends.dailyCount = 0;
+  }
+  chat.autoSends.sentIntents.push(intent);
+  chat.autoSends.dailyCount += 1;
+  saveState(state);
+}
+
+// Сумма автоответов за сегодня по всем чатам — для команды /auto.
+export function getTodayAutoSendCount() {
+  const today = todayKey();
+  return Object.values(state.chats || {}).reduce((sum, chat) => {
+    if (chat.autoSends?.dailyDate === today) return sum + chat.autoSends.dailyCount;
+    return sum;
+  }, 0);
+}
+
+// Ручной переключатель /auto on|off. undefined — не переопределялся,
+// используется дефолт из .env (config.autoSendEnabled).
+export function getAutoSendToggle() {
+  return state.autoSendToggle;
+}
+
+export function setAutoSendToggle(value) {
+  state.autoSendToggle = value;
+  saveState(state);
+}
+
+// Право business-подключения удалять отправленные сообщения
+// (BusinessBotRights.can_delete_sent_messages) — от этого зависит, показывать
+// ли кнопку "🗑 Удалить у клиента" после автоответа.
+export function cacheConnectionRights(connectionId, canDelete) {
+  state.connectionRights = state.connectionRights || {};
+  state.connectionRights[connectionId] = Boolean(canDelete);
+  saveState(state);
+}
+
+export function getConnectionRights(connectionId) {
+  return Boolean(state.connectionRights?.[connectionId]);
 }

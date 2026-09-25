@@ -29,6 +29,7 @@ export async function getUpdates(offset) {
       "edited_business_message",
       "message",
       "callback_query",
+      "channel_post", // ручные посты в Untra.dev — для баланса рубрик в /day
     ],
   });
 }

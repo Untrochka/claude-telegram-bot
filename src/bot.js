@@ -40,6 +40,8 @@ import {
   getTodayAutoSendCount,
   getAutoSendToggle,
   setAutoSendToggle,
+  addRecentPost,
+  getRecentPosts,
 } from "./state.js";
 import { generateReply, generateSecretaryReply, generateContentReply } from "./claudeClient.js";
 import { getTemplate } from "./templates.js";
@@ -294,6 +296,7 @@ async function handleCallbackQuery(query) {
     try {
       if (isPost) {
         await sendMessage(draft.channelId, draft.text);
+        if (draft.channelId === config.untraChannelId) addRecentPost(draft.text);
         console.log(`[bot] Пост #${draftId} опубликован в ${draft.channelLabel} (${draft.channelId}).`);
       } else {
         await deliverToCustomer(draft.connectionId, draft.chatId, draft.text);
@@ -427,13 +430,43 @@ async function handleChatCommand(ownerChatId, text) {
 const CONTENT_CHAT_PREFIX = "content:";
 const DAY_KICKOFF = "[СИСТЕМА] Начни сбор материала на сегодня.";
 
+function formatRecentPosts() {
+  const posts = getRecentPosts();
+  if (!posts.length) return "Последние посты Untra.dev: данных пока нет.";
+  const lines = posts.map((p, i) => {
+    const date = new Date(p.ts).toLocaleDateString("ru-RU");
+    return `${i + 1}. (${date}) ${p.text.replace(/\s+/g, " ").slice(0, 200)}`;
+  });
+  return `Последние посты Untra.dev (от старых к новым):\n${lines.join("\n")}`;
+}
+
+// Ручной пост в Untra.dev (бот — админ канала, поэтому получает channel_post).
+// Посты, опубликованные самим ботом, сюда не приходят — они пишутся при ✅.
+function isUntraChannel(chat) {
+  const id = String(config.untraChannelId);
+  return String(chat.id) === id || (chat.username && `@${chat.username}`.toLowerCase() === id.toLowerCase());
+}
+
+function handleChannelPost(post) {
+  const text = post.text || post.caption;
+  if (!text || !isUntraChannel(post.chat)) return;
+  addRecentPost(text);
+  console.log("[bot] Записал ручной пост Untra.dev для баланса рубрик.");
+}
+
 async function runContentTurn(chatId, incomingText) {
   const key = `${CONTENT_CHAT_PREFIX}${chatId}`;
   pushHistory(key, "azizhon", incomingText);
 
   try {
     const history = getHistory(key);
-    const { raw, ready, message, untra, vlog, notes } = await generateContentReply(history.slice(0, -1), incomingText);
+    // Последние посты канала идут контекстом на каждом ходе (не в историю —
+    // её обрезает HISTORY_LIMIT), чтобы модель видела баланс рубрик до конца интервью.
+    const context = [{ role: "context", text: formatRecentPosts() }];
+    const { raw, ready, message, untra, vlog, notes } = await generateContentReply(
+      [...context, ...history.slice(0, -1)],
+      incomingText
+    );
     if (!raw) {
       console.warn("[bot] Пустой ответ от контент-агента.");
       return;
@@ -445,20 +478,20 @@ async function runContentTurn(chatId, incomingText) {
       return;
     }
 
-    if (!untra && !vlog) {
+    if (!untra.length && !vlog) {
       // Маркер есть, но секции не распознались — не теряем текст молча.
       await sendMessage(chatId, raw);
       return;
     }
 
-    if (untra) {
+    for (const post of untra) {
       const draftId = createDraft({
         kind: "channel_post",
         channelId: config.untraChannelId,
         channelLabel: "Untra.dev",
-        text: untra,
+        text: post,
       });
-      await sendMessageWithButtons(chatId, `📝 Untra.dev:\n\n${untra}`, [
+      await sendMessageWithButtons(chatId, `📝 Untra.dev:\n\n${post}`, [
         [
           { text: "✅ Запостить", callback_data: `d:s:${draftId}` },
           { text: "🗑 Не постить", callback_data: `d:x:${draftId}` },
@@ -641,6 +674,8 @@ async function pollLoop() {
         await handlePersonalMessage(update.message);
       } else if (update.callback_query) {
         await handleCallbackQuery(update.callback_query);
+      } else if (update.channel_post) {
+        handleChannelPost(update.channel_post);
       }
     }
   }

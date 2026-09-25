@@ -228,3 +228,20 @@ export function cacheConnectionRights(connectionId, canDelete) {
 export function getConnectionRights(connectionId) {
   return Boolean(state.connectionRights?.[connectionId]);
 }
+
+// --- Последние посты Untra.dev для /day (баланс рубрик) ---
+// Пишутся и при публикации через бота (✅), и при ручном посте в канал
+// (апдейт channel_post). Храним только начало текста — модели хватает,
+// чтобы понять рубрику.
+const RECENT_POSTS_LIMIT = 10;
+
+export function addRecentPost(text) {
+  state.recentPosts = state.recentPosts || [];
+  state.recentPosts.push({ text: text.slice(0, 400), ts: Date.now() });
+  state.recentPosts = state.recentPosts.slice(-RECENT_POSTS_LIMIT);
+  saveState(state);
+}
+
+export function getRecentPosts() {
+  return state.recentPosts || [];
+}

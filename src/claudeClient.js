@@ -170,9 +170,17 @@ export function parseContentReply(raw) {
   if (!trimmed.startsWith("READY_TO_POST")) {
     return { ready: false, message: trimmed };
   }
-  const block = (name) =>
-    trimmed.match(new RegExp(`===${name}===\\s*([\\s\\S]*?)(?=\\n===(?:UNTRA|VLOG|NOTES)===|$)`))?.[1]?.trim() || null;
-  return { ready: true, untra: block("UNTRA"), vlog: block("VLOG"), notes: block("NOTES") };
+  const blocks = (name) =>
+    [...trimmed.matchAll(new RegExp(`===${name}===\\s*([\\s\\S]*?)(?=\\n===(?:UNTRA|VLOG|NOTES)===|$)`, "g"))]
+      .map((m) => m[1].trim())
+      .filter(Boolean);
+  // UNTRA может быть до 2 раз (насыщенный день), остальные — по одному.
+  return {
+    ready: true,
+    untra: blocks("UNTRA").slice(0, 2),
+    vlog: blocks("VLOG")[0] || null,
+    notes: blocks("NOTES")[0] || null,
+  };
 }
 
 export async function generateContentReply(history, incomingText) {

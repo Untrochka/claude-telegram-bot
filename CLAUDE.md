@@ -18,11 +18,13 @@ Telegram-бот-секретарь для фрилансера Азизхона 
 - `src/templates.js` — фиксированные шаблоны для intent refusal/soft_no/examples.
 - `src/prices.js` — единственный источник разрешённых цен (в сумах) и проверка сумм в тексте.
 - `src/commands.js` — единственный источник списка команд для `/help` и `setMyCommands`.
+- `src/media.js` — голосовые/кружки → текст (Groq Whisper), фото → картинки, видео → кадры + звук (ffmpeg).
+- `src/format.js` — markdown-lite от Рафаэля → HTML Telegram, нарезка длинных ответов.
 
 ## Команды разработки
 
 - Запуск: `npm start` (нужен заполненный `.env`, см. `.env.example`).
-- Тесты классификатора intent: `npm run test:intents`.
+- Тесты классификатора intent: `npm run test:intents`. Режим /day: `npm run test:day`. Медиа и форматирование: `npm run test:media`.
 - Синтаксис после правки файла: `node --check src/<файл>.js`.
 - `DRY_RUN=true` в `.env` — ничего не уходит клиентам (ни автоответ, ни ✅), только лог/уведомление владельцу. Использовать при любой ручной проверке.
 

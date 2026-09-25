@@ -8,7 +8,8 @@
   "scripts": {
     "start": "node src/bot.js",
     "test:intents": "node scripts/test-intents.js",
-    "test:day": "node scripts/test-day.js"
+    "test:day": "node scripts/test-day.js",
+    "test:media": "node scripts/test-media.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5"

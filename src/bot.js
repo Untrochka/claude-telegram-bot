@@ -11,6 +11,8 @@ import {
   editMessageText,
   answerCallbackQuery,
   setMyCommands,
+  sendHtmlMessage,
+  sendChatAction,
 } from "./telegram.js";
 import {
   getLastUpdateId,
@@ -47,6 +49,8 @@ import { generateReply, generateSecretaryReply, generateContentReply } from "./c
 import { getTemplate } from "./templates.js";
 import { checkPrices } from "./prices.js";
 import { MENU_COMMANDS, buildHelpText } from "./commands.js";
+import { extractMedia, hasMedia, MediaError } from "./media.js";
+import { toTelegramHtml, splitForTelegram } from "./format.js";
 
 console.log(`[bot] Запуск. Режим Claude: ${config.claudeMode}${config.dryRun ? " (DRY_RUN)" : ""}`);
 
@@ -182,7 +186,7 @@ async function resolveOwnerId(connectionId) {
   return ownerId;
 }
 
-async function notifyNonTextMessage(chatId, msg) {
+async function notifyNonTextMessage(chatId, msg, reason = "") {
   const kind = msg.voice
     ? "🎤 Голосовое"
     : msg.video_note
@@ -193,7 +197,8 @@ async function notifyNonTextMessage(chatId, msg) {
           ? "📷 Фото без подписи"
           : null;
   if (!kind) return; // стикеры и прочее нестандартное — как и раньше, молча пропускаем
-  await sendMessage(config.ownerTelegramId, `${kind} от клиента в чате ${chatId} — ответь сам, бот не отвечает.`);
+  const why = reason ? ` (не смог разобрать: ${reason})` : "";
+  await sendMessage(config.ownerTelegramId, `${kind} от клиента в чате ${chatId} — ответь сам, бот не отвечает${why}.`);
 }
 
 async function handleBusinessMessage(msg) {
@@ -219,22 +224,45 @@ async function handleBusinessMessage(msg) {
     return;
   }
 
-  if (!text) {
+  // Голосовое / фото / видео клиента -> расшифровка и картинки для модели.
+  // Ответ на такое сообщение — только черновик (расшифровка может ошибаться).
+  let incoming = text || "";
+  let images = [];
+  let mediaKind = null;
+  if (hasMedia(msg)) {
+    try {
+      const media = await extractMedia(msg);
+      if (media) {
+        incoming = media.text;
+        images = media.images;
+        mediaKind = media.kind;
+      }
+    } catch (err) {
+      console.error(`[bot] Не смог разобрать медиа в чате ${chatId}:`, err.message);
+      if (!text) {
+        await notifyNonTextMessage(chatId, msg, err instanceof MediaError ? err.message : "ошибка, см. логи");
+        return;
+      }
+    }
+  }
+
+  if (!incoming) {
     await notifyNonTextMessage(chatId, msg);
     return;
   }
 
-  console.log(`[bot] Новое сообщение в чате ${chatId}: ${text.slice(0, 80)}`);
-  pushHistory(chatId, "customer", text);
+  const customerText = incoming;
+  console.log(`[bot] Новое сообщение в чате ${chatId}${mediaKind ? ` (${mediaKind})` : ""}: ${customerText.slice(0, 80)}`);
+  pushHistory(chatId, "customer", customerText);
 
   try {
     const history = getHistory(chatId);
-    const { intent, product, text: modelReply } = await generateReply(history.slice(0, -1), text);
+    const { intent, product, text: modelReply } = await generateReply(history.slice(0, -1), customerText, images);
 
     if (intent === "autoreply") {
       await sendMessage(
         config.ownerTelegramId,
-        `🤖 Автоответчик клиента в чате ${chatId} — ждём живого человека.\n💬 ${text}`
+        `🤖 Автоответчик клиента в чате ${chatId} — ждём живого человека.\n💬 ${customerText}`
       );
       return;
     }
@@ -255,6 +283,7 @@ async function handleBusinessMessage(msg) {
     }
 
     const eligibleForAutoSend =
+      !mediaKind &&
       !priceWarning &&
       config.autoSendIntents.includes(intent) &&
       isAutoSendActive() &&
@@ -263,11 +292,11 @@ async function handleBusinessMessage(msg) {
       canAutoSendNow(chatId, intent);
 
     if (eligibleForAutoSend) {
-      scheduleAutoSend({ connectionId, chatId, intent, product, customerText: text, replyText: outgoingText });
+      scheduleAutoSend({ connectionId, chatId, intent, product, customerText, replyText: outgoingText });
       return;
     }
 
-    await sendDraftCard(connectionId, chatId, intent, text, outgoingText, priceWarning);
+    await sendDraftCard(connectionId, chatId, intent, customerText, outgoingText, priceWarning);
   } catch (err) {
     console.error(`[bot] Ошибка генерации ответа в чате ${chatId}:`, err.message);
   }
@@ -454,7 +483,7 @@ function handleChannelPost(post) {
   console.log("[bot] Записал ручной пост Untra.dev для баланса рубрик.");
 }
 
-async function runContentTurn(chatId, incomingText) {
+async function runContentTurn(chatId, incomingText, images = []) {
   const key = `${CONTENT_CHAT_PREFIX}${chatId}`;
   pushHistory(key, "azizhon", incomingText);
 
@@ -465,7 +494,8 @@ async function runContentTurn(chatId, incomingText) {
     const context = [{ role: "context", text: formatRecentPosts() }];
     const { raw, ready, message, untra, vlog, notes } = await generateContentReply(
       [...context, ...history.slice(0, -1)],
-      incomingText
+      incomingText,
+      images
     );
     if (!raw) {
       console.warn("[bot] Пустой ответ от контент-агента.");
@@ -547,6 +577,13 @@ async function checkReminders() {
   }
 }
 
+// Ответ Рафаэля: markdown-lite -> HTML Telegram, длинное — несколькими сообщениями.
+async function sendFormatted(chatId, md) {
+  for (const chunk of splitForTelegram(md)) {
+    await sendHtmlMessage(chatId, toTelegramHtml(chunk), chunk);
+  }
+}
+
 async function handleAutoCommand(chatId, text) {
   const arg = text.slice("/auto".length).trim().toLowerCase();
 
@@ -576,7 +613,29 @@ async function handlePersonalMessage(msg) {
     return;
   }
 
-  const text = msg.text || msg.caption;
+  // Голосовое -> текст, фото/видео -> картинки для Claude. Команды голосом
+  // не распознаются (расшифровка не начинается с "/"), это нормально.
+  let text = msg.text || msg.caption || "";
+  let images = [];
+  if (hasMedia(msg)) {
+    sendChatAction(msg.chat.id).catch(() => {});
+    try {
+      const media = await extractMedia(msg);
+      if (media) {
+        text = media.text;
+        images = media.images;
+        if (media.kind === "voice") {
+          await sendMessage(msg.chat.id, `🎤 ${media.transcript || "(ничего не распознал)"}`);
+          if (!media.transcript) return;
+        }
+      }
+    } catch (err) {
+      console.error("[bot] Не смог разобрать медиа от Азизхона:", err.message);
+      const why = err instanceof MediaError ? err.message : "ошибка на моей стороне, см. логи";
+      await sendMessage(msg.chat.id, `Не смог разобрать вложение: ${why}.`);
+      if (!msg.caption) return;
+    }
+  }
   if (!text) return;
 
   console.log(`[bot] Секретарь: сообщение от Азизхона: ${text.slice(0, 80)}`);
@@ -625,7 +684,7 @@ async function handlePersonalMessage(msg) {
   }
 
   if (isContentModeActive(msg.chat.id)) {
-    await runContentTurn(msg.chat.id, text);
+    await runContentTurn(msg.chat.id, text, images);
     return;
   }
 
@@ -633,13 +692,14 @@ async function handlePersonalMessage(msg) {
   pushHistory(chatKey, "azizhon", text);
 
   try {
+    sendChatAction(msg.chat.id).catch(() => {});
     const history = getHistory(chatKey);
-    const reply = await generateSecretaryReply(history.slice(0, -1), text);
+    const reply = await generateSecretaryReply(history.slice(0, -1), text, images);
     if (!reply) {
       console.warn("[bot] Пустой ответ от секретаря, пропускаю отправку.");
       return;
     }
-    await sendMessage(msg.chat.id, reply);
+    await sendFormatted(msg.chat.id, reply);
     pushHistory(chatKey, "assistant", reply);
   } catch (err) {
     console.error(`[bot] Ошибка секретарского ответа:`, err.message);

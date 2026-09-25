@@ -103,3 +103,35 @@ export async function deleteBusinessMessages(connectionId, messageIds) {
 export async function setMyCommands(commands, scope) {
   return call("setMyCommands", scope ? { commands, scope } : { commands });
 }
+
+// --- Файлы (голосовые, фото, видео) ---
+// Bot API отдаёт ботам файлы только до 20 МБ — большее скачать нельзя.
+export const MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024;
+
+export async function getFile(fileId) {
+  return call("getFile", { file_id: fileId });
+}
+
+// Возвращает Buffer. URL содержит токен бота — не логировать.
+export async function downloadFile(filePath) {
+  const res = await fetch(`https://api.telegram.org/file/bot${config.botToken}/${filePath}`);
+  if (!res.ok) throw new Error(`Не удалось скачать файл Telegram: HTTP ${res.status}`);
+  return Buffer.from(await res.arrayBuffer());
+}
+
+// Сообщение с HTML-разметкой (см. src/format.js). Если Telegram не принял
+// разметку — повторяем тем же текстом без разметки, чтобы ответ не потерялся.
+export async function sendHtmlMessage(chatId, html, plainFallback) {
+  try {
+    return await call("sendMessage", { chat_id: chatId, text: html, parse_mode: "HTML" });
+  } catch (err) {
+    if (!/can't parse entities|unsupported start tag|can't find end tag/i.test(err.message)) throw err;
+    console.warn("[telegram] HTML не принят, отправляю без разметки:", err.message);
+    return call("sendMessage", { chat_id: chatId, text: plainFallback });
+  }
+}
+
+// "печатает…" в шапке чата, пока идёт расшифровка/ответ (живёт ~5 секунд).
+export async function sendChatAction(chatId, action = "typing") {
+  return call("sendChatAction", { chat_id: chatId, action });
+}

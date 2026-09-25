@@ -47,6 +47,10 @@ export const config = {
   dryRun: (process.env.DRY_RUN || "false").trim().toLowerCase() === "true",
   autoSendEnabled,
   autoSendIntents,
+  // Расшифровка голосовых и звука из видео (Groq Whisper). Пусто — голос не
+  // расшифровывается, бот просто сообщает о голосовом, как раньше.
+  groqApiKey: (process.env.GROQ_API_KEY || "").trim(),
+  groqWhisperModel: (process.env.GROQ_WHISPER_MODEL || "whisper-large-v3").trim(),
 };
 
 if (config.claudeMode === "api" && !config.anthropicApiKey) {

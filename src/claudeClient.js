@@ -40,7 +40,13 @@ function buildSecretaryPrompt(history, incomingText) {
 // Инструментов у Claude нет (--allowedTools "" + --permission-mode dontAsk) — это просто
 // генерация текста ответа, никакого доступа к файлам/команде это дать не должно,
 // потому что промпт приходит от постороннего человека в Telegram.
-function callViaSubscription(prompt, personaPath) {
+//
+// Картинки (фото, кадры видео) передаются прямо в сообщении через
+// --input-format stream-json — это не файлы на диске и не инструменты,
+// ограничения выше (песочница, --allowedTools "") остаются теми же.
+// stream-json на входе требует stream-json на выходе: ответ — строка type=result.
+function callViaSubscription(prompt, personaPath, images = []) {
+  const withImages = images.length > 0;
   return new Promise((resolve, reject) => {
     const child = spawn(
       "claude",
@@ -52,8 +58,9 @@ function callViaSubscription(prompt, personaPath) {
         "",
         "--permission-mode",
         "dontAsk",
-        "--output-format",
-        "json",
+        ...(withImages
+          ? ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+          : ["--output-format", "json"]),
       ],
       { stdio: ["pipe", "pipe", "pipe"], cwd: sandboxDir }
     );
@@ -65,8 +72,8 @@ function callViaSubscription(prompt, personaPath) {
 
     const timeout = setTimeout(() => {
       child.kill("SIGTERM");
-      reject(new Error("claude -p не ответил за 60 секунд"));
-    }, 60_000);
+      reject(new Error(`claude -p не ответил за ${withImages ? 120 : 60} секунд`));
+    }, withImages ? 120_000 : 60_000);
 
     child.on("close", (code) => {
       clearTimeout(timeout);
@@ -75,16 +82,40 @@ function callViaSubscription(prompt, personaPath) {
         return;
       }
       try {
-        const parsed = JSON.parse(stdout);
+        const parsed = withImages
+          ? stdout
+              .split("\n")
+              .filter((line) => line.trim())
+              .map((line) => JSON.parse(line))
+              .reverse()
+              .find((event) => event.type === "result")
+          : JSON.parse(stdout);
+        if (!parsed) throw new Error("нет события result");
+        if (parsed.is_error) throw new Error(parsed.result || "claude вернул ошибку");
         resolve(parsed.result?.trim() || "");
       } catch (e) {
-        reject(new Error(`Не удалось разобрать ответ claude -p: ${e.message}\n${stdout}`));
+        reject(new Error(`Не удалось разобрать ответ claude -p: ${e.message}\n${stdout.slice(-500)}`));
       }
     });
 
-    child.stdin.write(prompt);
+    if (withImages) {
+      const message = {
+        type: "user",
+        message: { role: "user", content: [...imageBlocks(images), { type: "text", text: prompt }] },
+      };
+      child.stdin.write(`${JSON.stringify(message)}\n`);
+    } else {
+      child.stdin.write(prompt);
+    }
     child.stdin.end();
   });
+}
+
+function imageBlocks(images) {
+  return images.map((img) => ({
+    type: "image",
+    source: { type: "base64", media_type: img.mediaType, data: img.data },
+  }));
 }
 
 let anthropicClientPromise;
@@ -97,14 +128,15 @@ async function getAnthropicClient() {
   return anthropicClientPromise;
 }
 
-async function callViaApi(prompt, personaPath, maxTokens) {
+async function callViaApi(prompt, personaPath, maxTokens, images = []) {
   const client = await getAnthropicClient();
   const persona = fs.readFileSync(personaPath, "utf8");
+  const content = images.length ? [...imageBlocks(images), { type: "text", text: prompt }] : prompt;
   const msg = await client.messages.create({
     model: config.anthropicModel,
     max_tokens: maxTokens,
     system: persona,
-    messages: [{ role: "user", content: prompt }],
+    messages: [{ role: "user", content }],
   });
   const text = msg.content.find((b) => b.type === "text")?.text || "";
   return text.trim();
@@ -144,21 +176,20 @@ export function parseTriagedReply(raw) {
   };
 }
 
-export async function generateReply(history, incomingText) {
-  const prompt = buildPrompt(history, incomingText);
-  const raw =
-    config.claudeMode === "api"
-      ? await callViaApi(prompt, config.personaPath, 300)
-      : await callViaSubscription(prompt, config.personaPath);
+function callClaude(prompt, personaPath, maxTokens, images = []) {
+  return config.claudeMode === "api"
+    ? callViaApi(prompt, personaPath, maxTokens, images)
+    : callViaSubscription(prompt, personaPath, images);
+}
+
+// images — [{ mediaType, data(base64) }] к текущему сообщению (фото, кадры видео).
+export async function generateReply(history, incomingText, images = []) {
+  const raw = await callClaude(buildPrompt(history, incomingText), config.personaPath, 400, images);
   return parseTriagedReply(raw);
 }
 
-export async function generateSecretaryReply(history, incomingText) {
-  const prompt = buildSecretaryPrompt(history, incomingText);
-  if (config.claudeMode === "api") {
-    return callViaApi(prompt, config.assistantPersonaPath, 1500);
-  }
-  return callViaSubscription(prompt, config.assistantPersonaPath);
+export async function generateSecretaryReply(history, incomingText, images = []) {
+  return callClaude(buildSecretaryPrompt(history, incomingText), config.assistantPersonaPath, 2000, images);
 }
 
 // См. content-persona.md — первая строка READY_TO_POST означает, что дальше
@@ -183,11 +214,7 @@ export function parseContentReply(raw) {
   };
 }
 
-export async function generateContentReply(history, incomingText) {
-  const prompt = buildSecretaryPrompt(history, incomingText);
-  const raw =
-    config.claudeMode === "api"
-      ? await callViaApi(prompt, config.contentPersonaPath, 1500)
-      : await callViaSubscription(prompt, config.contentPersonaPath);
+export async function generateContentReply(history, incomingText, images = []) {
+  const raw = await callClaude(buildSecretaryPrompt(history, incomingText), config.contentPersonaPath, 1500, images);
   return { raw, ...parseContentReply(raw) };
 }

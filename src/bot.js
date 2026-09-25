@@ -44,6 +44,10 @@ import {
   setAutoSendToggle,
   addRecentPost,
   getRecentPosts,
+  addStyleSample,
+  getStyleSamples,
+  setChatMeta,
+  getChatMeta,
 } from "./state.js";
 import { generateReply, generateSecretaryReply, generateContentReply } from "./claudeClient.js";
 import { getTemplate } from "./templates.js";
@@ -105,9 +109,20 @@ function urgencyLabelFor(intent) {
   return { urgent: "🔴 Срочно", spam: "⚪ Спам/не по делу" }[intent] || "🟡 Обычное";
 }
 
+// "Имя @username · #id" — чтобы в карточке было видно, кто это, а не голый id.
+function chatLabel(chatId) {
+  const { title } = getChatMeta(chatId);
+  return title ? `${title} · #${chatId}` : `чат #${chatId}`;
+}
+
+function chatTitleFrom(chat) {
+  const name = [chat.first_name, chat.last_name].filter(Boolean).join(" ") || chat.title || "";
+  return [name, chat.username ? `@${chat.username}` : ""].filter(Boolean).join(" ");
+}
+
 async function sendDraftCard(connectionId, chatId, intent, customerText, replyText, extraLine = "") {
   const draftId = createDraft({ kind: "business", connectionId, chatId, text: replyText });
-  const preview = `${urgencyLabelFor(intent)}\n${extraLine}💬 Клиент (чат ${chatId}):\n${customerText}\n\n✏️ Черновик ответа (${intent}):\n${replyText}`;
+  const preview = `${urgencyLabelFor(intent)}\n${extraLine}💬 ${chatLabel(chatId)}:\n${customerText}\n\n✏️ Черновик ответа (${intent}):\n${replyText}`;
   await sendMessageWithButtons(config.ownerTelegramId, preview, [
     [
       { text: "✅ Отправить", callback_data: `d:s:${draftId}` },
@@ -156,7 +171,7 @@ async function executeAutoSend(item) {
       const delDraftId = createDraft({ kind: "auto_sent", connectionId, chatId, messageId: sent.message_id });
       buttons.push({ text: "🗑 Удалить у клиента", callback_data: `d:del:${delDraftId}` });
     }
-    const card = `🤖 Отправлено автоматически (${intent})\n💬 Клиент (чат ${chatId}):\n${customerText}\n\n✏️ Ответ:\n${replyText}`;
+    const card = `🤖 Отправлено автоматически (${intent})\n💬 ${chatLabel(chatId)}:\n${customerText}\n\n✏️ Ответ:\n${replyText}`;
     if (buttons.length) {
       await sendMessageWithButtons(config.ownerTelegramId, card, [buttons]);
     } else {
@@ -198,7 +213,36 @@ async function notifyNonTextMessage(chatId, msg, reason = "") {
           : null;
   if (!kind) return; // стикеры и прочее нестандартное — как и раньше, молча пропускаем
   const why = reason ? ` (не смог разобрать: ${reason})` : "";
-  await sendMessage(config.ownerTelegramId, `${kind} от клиента в чате ${chatId} — ответь сам, бот не отвечает${why}.`);
+  await sendMessage(config.ownerTelegramId, `${kind} от ${chatLabel(chatId)} — ответь сам, бот не отвечает${why}.`);
+}
+
+// Пачка сообщений от одного человека: люди пишут по 3–4 сообщения подряд,
+// и черновик на каждое получается без учёта следующих. Ждём паузу и
+// отвечаем один раз на всю пачку.
+const BATCH_QUIET_MS = 40_000;
+const MAX_BATCH_IMAGES = 8;
+const pendingBatches = new Map(); // chatId -> { connectionId, texts, images, hasMedia, timer }
+
+function cancelBatch(chatId) {
+  const batch = pendingBatches.get(chatId);
+  if (!batch) return;
+  clearTimeout(batch.timer);
+  pendingBatches.delete(chatId);
+}
+
+function addToBatch(chatId, connectionId, text, images, isMedia) {
+  const batch = pendingBatches.get(chatId) || { connectionId, texts: [], images: [], hasMedia: false };
+  clearTimeout(batch.timer);
+  batch.texts.push(text);
+  batch.images.push(...images.slice(0, MAX_BATCH_IMAGES - batch.images.length));
+  batch.hasMedia = batch.hasMedia || isMedia;
+  batch.timer = setTimeout(() => {
+    pendingBatches.delete(chatId);
+    replyToBatch(chatId, batch).catch((err) =>
+      console.error(`[bot] Ошибка генерации ответа в чате ${chatId}:`, err.message)
+    );
+  }, BATCH_QUIET_MS);
+  pendingBatches.set(chatId, batch);
 }
 
 async function handleBusinessMessage(msg) {
@@ -218,13 +262,25 @@ async function handleBusinessMessage(msg) {
   }
 
   if (msg.from?.id === ownerId) {
-    // Азизхон сам ответил в этом чате вручную — просто запоминаем для контекста, не отвечаем.
-    if (text) pushHistory(chatId, "azizhon", text);
+    // Сообщение, которое отправил сам бот от имени Азизхона (✅ или автоответ),
+    // приходит обратно апдейтом — в историю оно уже записано, в образцы стиля
+    // его брать нельзя.
+    if (msg.sender_business_bot) return;
+    // Азизхон сам ответил в этом чате — запоминаем для контекста и как образец
+    // его стиля; недоотвеченную пачку отменяем, он ведёт диалог сам.
+    cancelBatch(chatId);
+    if (text) {
+      pushHistory(chatId, "azizhon", text);
+      addStyleSample(text);
+    }
     console.log(`[bot] Азизхон ответил лично в чате ${chatId}, бот молчит.`);
     return;
   }
 
-  // Голосовое / фото / видео клиента -> расшифровка и картинки для модели.
+  const title = chatTitleFrom(msg.chat);
+  if (title && title !== getChatMeta(chatId).title) setChatMeta(chatId, { title });
+
+  // Голосовое / фото / видео -> расшифровка и картинки для модели.
   // Ответ на такое сообщение — только черновик (расшифровка может ошибаться).
   let incoming = text || "";
   let images = [];
@@ -251,55 +307,70 @@ async function handleBusinessMessage(msg) {
     return;
   }
 
-  const customerText = incoming;
-  console.log(`[bot] Новое сообщение в чате ${chatId}${mediaKind ? ` (${mediaKind})` : ""}: ${customerText.slice(0, 80)}`);
-  pushHistory(chatId, "customer", customerText);
+  console.log(`[bot] Новое сообщение в чате ${chatId}${mediaKind ? ` (${mediaKind})` : ""}: ${incoming.slice(0, 80)}`);
+  pushHistory(chatId, "customer", incoming);
+  addToBatch(chatId, connectionId, incoming, images, Boolean(mediaKind));
+}
 
-  try {
-    const history = getHistory(chatId);
-    const { intent, product, text: modelReply } = await generateReply(history.slice(0, -1), customerText, images);
+async function replyToBatch(chatId, batch) {
+  const { connectionId, texts, images } = batch;
+  const customerText = texts.join("\n");
 
-    if (intent === "autoreply") {
-      await sendMessage(
-        config.ownerTelegramId,
-        `🤖 Автоответчик клиента в чате ${chatId} — ждём живого человека.\n💬 ${customerText}`
-      );
-      return;
-    }
+  // Сообщения пачки уже лежат в конце истории — в "раньше" их не дублируем.
+  const history = getHistory(chatId);
+  const prior = history.slice(0, Math.max(0, history.length - texts.length));
 
-    let outgoingText = modelReply;
-    let priceWarning = "";
+  const { intent, product, chat, text: modelReply } = await generateReply(prior, customerText, images, {
+    chatName: getChatMeta(chatId).title,
+    styleSamples: getStyleSamples(),
+  });
+  if (chat !== "unknown") setChatMeta(chatId, { kind: chat });
+  console.log(`[bot] Чат ${chatId}: intent=${intent} product=${product} chat=${chat}`);
 
-    if (intent === "refusal" || intent === "soft_no" || intent === "examples") {
-      outgoingText = getTemplate(intent, product) || modelReply;
-    } else if (intent === "price") {
-      const { ok } = checkPrices(modelReply);
-      if (!ok) priceWarning = "⚠️ цена не из прайса — проверь вручную.\n";
-    }
-
-    if (!outgoingText) {
-      console.warn("[bot] Пустой ответ от Claude, пропускаю отправку.");
-      return;
-    }
-
-    const eligibleForAutoSend =
-      !mediaKind &&
-      !priceWarning &&
-      config.autoSendIntents.includes(intent) &&
-      isAutoSendActive() &&
-      hasAzizhonEverReplied(chatId) &&
-      Date.now() - getLastAzizhonTs(chatId) > AUTO_SEND_QUIET_MS &&
-      canAutoSendNow(chatId, intent);
-
-    if (eligibleForAutoSend) {
-      scheduleAutoSend({ connectionId, chatId, intent, product, customerText, replyText: outgoingText });
-      return;
-    }
-
-    await sendDraftCard(connectionId, chatId, intent, customerText, outgoingText, priceWarning);
-  } catch (err) {
-    console.error(`[bot] Ошибка генерации ответа в чате ${chatId}:`, err.message);
+  if (intent === "autoreply") {
+    await sendMessage(config.ownerTelegramId, `🤖 Автоответчик у ${chatLabel(chatId)} — ждём живого человека.\n💬 ${customerText}`);
+    return;
   }
+
+  // «Хоп», «ок», 👍 — отвечать не нужно. Личные чаты (друзья, одноклассники) —
+  // черновик не нужен: Telegram и так покажет сообщение, а бот там только
+  // выдумывает контекст и берёт обязательства за Азизхона.
+  if (intent === "ack" || chat === "personal") {
+    console.log(`[bot] Чат ${chatId}: без черновика (${intent === "ack" ? "подтверждение" : "личный чат"}).`);
+    return;
+  }
+
+  let outgoingText = modelReply;
+  let priceWarning = "";
+
+  if (intent === "refusal" || intent === "soft_no" || intent === "examples") {
+    outgoingText = getTemplate(intent, product) || modelReply;
+  } else if (intent === "price") {
+    const { ok } = checkPrices(modelReply);
+    if (!ok) priceWarning = "⚠️ цена не из прайса — проверь вручную.\n";
+  }
+
+  if (!outgoingText) {
+    console.warn("[bot] Пустой ответ от Claude, пропускаю отправку.");
+    return;
+  }
+
+  const eligibleForAutoSend =
+    chat === "work" &&
+    !batch.hasMedia &&
+    !priceWarning &&
+    config.autoSendIntents.includes(intent) &&
+    isAutoSendActive() &&
+    hasAzizhonEverReplied(chatId) &&
+    Date.now() - getLastAzizhonTs(chatId) > AUTO_SEND_QUIET_MS &&
+    canAutoSendNow(chatId, intent);
+
+  if (eligibleForAutoSend) {
+    scheduleAutoSend({ connectionId, chatId, intent, product, customerText, replyText: outgoingText });
+    return;
+  }
+
+  await sendDraftCard(connectionId, chatId, intent, customerText, outgoingText, priceWarning);
 }
 
 async function handleCallbackQuery(query) {
@@ -431,7 +502,8 @@ async function handleChatsCommand(chatId) {
   }
   const lines = summaries.map((s) => {
     const who = s.lastRole === "customer" ? "клиент" : "ты";
-    return `#${s.chatId} — ${s.count} сообщ., последнее (${who}, ${formatAgo(s.lastTs)}): ${s.lastText.slice(0, 60)}`;
+    const name = s.title ? `${s.title} ` : "";
+    return `${name}#${s.chatId} — ${s.count} сообщ., последнее (${who}, ${formatAgo(s.lastTs)}): ${s.lastText.slice(0, 60)}`;
   });
   await sendMessage(chatId, lines.join("\n"));
 }

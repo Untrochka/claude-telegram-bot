@@ -74,12 +74,13 @@ export function setContentMode(chatId, active) {
 // Сводка по всем клиентским чатам для /chats — без секретарской переписки.
 export function listChatSummaries() {
   return Object.entries(state.chats || {})
-    .filter(([key]) => !key.startsWith("secretary:"))
+    .filter(([key]) => !key.includes(":")) // secretary:/content: — не клиентские чаты
     .map(([chatId, data]) => {
       const history = data.history || [];
       const last = history[history.length - 1];
       return {
         chatId,
+        title: data.title || "",
         count: history.length,
         lastText: last?.text || "",
         lastRole: last?.role || "",
@@ -158,8 +159,10 @@ export function markTaskNotified(id) {
 
 // --- Автоответы: защита от ошибок (см. CLAUDE_CODE_TASK.md п. 3.4) ---
 
+// Флаг появился позже истории: для старых чатов смотрим ещё и на историю.
 export function hasAzizhonEverReplied(chatId) {
-  return Boolean(state.chats[chatId]?.azizhonEverReplied);
+  const chat = state.chats[chatId];
+  return Boolean(chat?.azizhonEverReplied || chat?.history?.some((m) => m.role === "azizhon"));
 }
 
 export function getLastAzizhonTs(chatId) {
@@ -244,4 +247,36 @@ export function addRecentPost(text) {
 
 export function getRecentPosts() {
   return state.recentPosts || [];
+}
+
+// --- Образцы стиля: то, что Азизхон пишет САМ в бизнес-чатах ---
+// Одобренные черновики и автоответы сюда не попадают — иначе бот начнёт
+// копировать собственный стиль.
+const STYLE_SAMPLES_LIMIT = 40;
+
+export function addStyleSample(text) {
+  const clean = text.trim();
+  if (!clean || clean.length > 400 || clean.startsWith("/")) return;
+  state.styleSamples = state.styleSamples || [];
+  state.styleSamples.push(clean);
+  state.styleSamples = state.styleSamples.slice(-STYLE_SAMPLES_LIMIT);
+  saveState(state);
+}
+
+export function getStyleSamples(limit = 25) {
+  return (state.styleSamples || []).slice(-limit);
+}
+
+// --- Кто в чате и что это за чат ---
+// title — имя/@username для карточек; kind — "work" | "personal" по последней
+// оценке модели. Автоответ разрешён только в "work".
+export function setChatMeta(chatId, meta) {
+  if (!state.chats[chatId]) state.chats[chatId] = { history: [] };
+  Object.assign(state.chats[chatId], meta);
+  saveState(state);
+}
+
+export function getChatMeta(chatId) {
+  const chat = state.chats[chatId] || {};
+  return { title: chat.title || "", kind: chat.kind || "unknown" };
 }

@@ -13,10 +13,33 @@ import { config } from "./config.js";
 const sandboxDir = path.join(os.tmpdir(), "telegram-claude-bot-sandbox");
 fs.mkdirSync(sandboxDir, { recursive: true });
 
-function buildPrompt(history, incomingText) {
-  const lines = history.map((m) => `${m.role === "customer" ? "Собеседник" : "Азизхон"}: ${m.text}`);
-  lines.push(`Собеседник: ${incomingText}`);
-  lines.push("Азизхон:");
+// Промпт автоответчика. Модель должна написать СЛЕДУЮЩЕЕ СООБЩЕНИЕ АЗИЗХОНА,
+// а не отвечать ему как ассистент (иначе получается «Нужно сообщение от Хопа.
+// Что он написал?»). Поэтому рамка явная: кто собеседник, что было раньше,
+// что пришло сейчас, и живые образцы того, как Азизхон пишет сам.
+// ctx: { chatName, styleSamples: [text], now: Date }
+function buildPrompt(history, incomingText, ctx = {}) {
+  const now = (ctx.now || new Date()).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent" });
+  const lines = [`[Сейчас в Ташкенте: ${now}. Собеседник: ${ctx.chatName || "неизвестно"}.]`];
+
+  if (ctx.styleSamples?.length) {
+    lines.push("", "[Как Азизхон реально пишет сам (его сообщения из разных чатов, только стиль — не факты):]");
+    for (const sample of ctx.styleSamples) lines.push(`— ${sample}`);
+  }
+
+  lines.push("", "[Переписка до этого, старые сверху:]");
+  if (history.length) {
+    for (const m of history) lines.push(`${m.role === "customer" ? "Собеседник" : "Азизхон"}: ${m.text}`);
+  } else {
+    lines.push("(истории нет — возможно, переписка была до подключения бота)");
+  }
+
+  lines.push("", "[Новое от собеседника:]", incomingText);
+  lines.push(
+    "",
+    "[Задача: служебные строки по формату, затем следующее сообщение Азизхона этому собеседнику. " +
+      "Пишешь ОТ ЛИЦА Азизхона — не обращайся к Азизхону, не задавай ему вопросов, не объясняй, что ты бот-помощник.]"
+  );
   return lines.join("\n");
 }
 
@@ -156,23 +179,36 @@ const INTENTS = new Set([
   "autoreply",
   "urgent",
   "spam",
+  "ack",
   "other",
 ]);
 const PRODUCTS = new Set(["catalog", "barber", "other"]);
+const CHAT_KINDS = new Set(["work", "personal"]);
 
 // Экспортируется отдельно для scripts/test-intents.js — там нужен доступ
 // к чистому парсеру на заготовленных ответах, без реального вызова Claude.
 export function parseTriagedReply(raw) {
-  const match = raw.match(/^intent:\s*(\S+)\s*\nproduct:\s*(\S+)\s*\n\s*\n([\s\S]*)$/i);
-  if (!match) {
-    return { intent: "other", product: "other", text: raw.trim() };
+  // Служебные строки intent/product/chat идут в начале, в любом порядке;
+  // пустые строки между ними не важны. Всё после них — текст ответа.
+  const lines = raw.trim().split("\n");
+  const headers = {};
+  let i = 0;
+  for (; i < lines.length; i += 1) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const m = line.match(/^(intent|product|chat):\s*(\S*)\s*$/i);
+    if (!m) break;
+    headers[m[1].toLowerCase()] = m[2].toLowerCase();
   }
-  const intentRaw = match[1].trim().toLowerCase();
-  const productRaw = match[2].trim().toLowerCase();
+  if (!headers.intent) {
+    return { intent: "other", product: "other", chat: "unknown", text: raw.trim() };
+  }
   return {
-    intent: INTENTS.has(intentRaw) ? intentRaw : "other",
-    product: PRODUCTS.has(productRaw) ? productRaw : "other",
-    text: match[3].trim(),
+    intent: INTENTS.has(headers.intent) ? headers.intent : "other",
+    product: PRODUCTS.has(headers.product) ? headers.product : "other",
+    // work — рабочий чат (клиент/заказчик), personal — друзья/знакомые/учёба.
+    chat: CHAT_KINDS.has(headers.chat) ? headers.chat : "unknown",
+    text: lines.slice(i).join("\n").trim(),
   };
 }
 
@@ -183,8 +219,8 @@ function callClaude(prompt, personaPath, maxTokens, images = []) {
 }
 
 // images — [{ mediaType, data(base64) }] к текущему сообщению (фото, кадры видео).
-export async function generateReply(history, incomingText, images = []) {
-  const raw = await callClaude(buildPrompt(history, incomingText), config.personaPath, 400, images);
+export async function generateReply(history, incomingText, images = [], ctx = {}) {
+  const raw = await callClaude(buildPrompt(history, incomingText, ctx), config.personaPath, 400, images);
   return parseTriagedReply(raw);
 }
 

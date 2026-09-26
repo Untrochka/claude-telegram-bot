@@ -60,15 +60,34 @@ function buildSecretaryPrompt(history, incomingText) {
 // Он использует твой Pro-логин (claude login), НЕ отдельный API-ключ — это то самое
 // "бесплатно, пока тестируешь". Важно: без --bare CLI подхватывает subscription-логин;
 // с --bare он требует ANTHROPIC_API_KEY, поэтому здесь --bare НЕ используем.
-// Инструментов у Claude нет (--allowedTools "" + --permission-mode dontAsk) — это просто
-// генерация текста ответа, никакого доступа к файлам/команде это дать не должно,
-// потому что промпт приходит от постороннего человека в Telegram.
+//
+// Инструменты:
+// - автоответчик клиентам и /day — БЕЗ инструментов (--allowedTools "" +
+//   --permission-mode dontAsk): промпт приходит от постороннего человека в
+//   Telegram, никакого доступа к файлам/командам/сети это дать не должно;
+// - Рафаэль (личный чат, пишет только владелец) — только WebSearch и WebFetch:
+//   интернет, но без файлов и команд. cwd всё равно пустая песочница.
 //
 // Картинки (фото, кадры видео) передаются прямо в сообщении через
-// --input-format stream-json — это не файлы на диске и не инструменты,
-// ограничения выше (песочница, --allowedTools "") остаются теми же.
+// --input-format stream-json — это не файлы на диске и не инструменты.
 // stream-json на входе требует stream-json на выходе: ответ — строка type=result.
-function callViaSubscription(prompt, personaPath, images = []) {
+//
+// Сессии (--resume): Рафаэль и /day продолжают один разговор, как обычный чат
+// с Claude, — CLI сам хранит его в ~/.claude и сжимает, когда он длинный.
+const WEB_TOOLS = "WebSearch,WebFetch";
+
+// Если бот запущен из-под Claude Code (например, тесты в облаке), не наследуем
+// ID его сессии — иначе все вызовы пишут в одну чужую сессию. На сервере этих
+// переменных нет.
+function childEnv() {
+  const env = { ...process.env };
+  delete env.CLAUDE_CODE_SESSION_ID;
+  delete env.CLAUDE_CODE_REMOTE_SESSION_ID;
+  return env;
+}
+
+// -> { text, sessionId }
+function runClaudeCli({ prompt, systemFile, images = [], model, resumeId, webTools = false, timeoutMs = 60_000 }) {
   const withImages = images.length > 0;
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -76,16 +95,18 @@ function callViaSubscription(prompt, personaPath, images = []) {
       [
         "-p",
         "--append-system-prompt-file",
-        personaPath,
+        systemFile,
         "--allowedTools",
-        "",
+        webTools ? WEB_TOOLS : "",
         "--permission-mode",
         "dontAsk",
+        ...(model ? ["--model", model] : []),
+        ...(resumeId ? ["--resume", resumeId] : []),
         ...(withImages
           ? ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
           : ["--output-format", "json"]),
       ],
-      { stdio: ["pipe", "pipe", "pipe"], cwd: sandboxDir }
+      { stdio: ["pipe", "pipe", "pipe"], cwd: sandboxDir, env: childEnv() }
     );
 
     let stdout = "";
@@ -95,8 +116,8 @@ function callViaSubscription(prompt, personaPath, images = []) {
 
     const timeout = setTimeout(() => {
       child.kill("SIGTERM");
-      reject(new Error(`claude -p не ответил за ${withImages ? 120 : 60} секунд`));
-    }, withImages ? 120_000 : 60_000);
+      reject(new Error(`claude -p не ответил за ${Math.round(timeoutMs / 1000)} секунд`));
+    }, timeoutMs);
 
     child.on("close", (code) => {
       clearTimeout(timeout);
@@ -115,7 +136,7 @@ function callViaSubscription(prompt, personaPath, images = []) {
           : JSON.parse(stdout);
         if (!parsed) throw new Error("нет события result");
         if (parsed.is_error) throw new Error(parsed.result || "claude вернул ошибку");
-        resolve(parsed.result?.trim() || "");
+        resolve({ text: parsed.result?.trim() || "", sessionId: parsed.session_id || null });
       } catch (e) {
         reject(new Error(`Не удалось разобрать ответ claude -p: ${e.message}\n${stdout.slice(-500)}`));
       }
@@ -132,6 +153,24 @@ function callViaSubscription(prompt, personaPath, images = []) {
     }
     child.stdin.end();
   });
+}
+
+// Клиентский путь: без инструментов, без сессий, быстрая модель.
+async function callViaSubscription(prompt, personaPath, images = [], model = config.claudeModelFast) {
+  const { text } = await runClaudeCli({ prompt, systemFile: personaPath, images, model });
+  return text;
+}
+
+// Сессия: продолжаем разговор; если сессия потерялась (новый сервер, стёрли
+// ~/.claude) — начинаем новую, а не падаем.
+async function runSession(opts) {
+  try {
+    return await runClaudeCli(opts);
+  } catch (err) {
+    if (!opts.resumeId || !/no conversation found|session .*not found|invalid session/i.test(err.message)) throw err;
+    console.warn("[claude] Сессия не найдена, начинаю новую:", err.message.slice(0, 200));
+    return runClaudeCli({ ...opts, resumeId: null });
+  }
 }
 
 function imageBlocks(images) {
@@ -151,18 +190,29 @@ async function getAnthropicClient() {
   return anthropicClientPromise;
 }
 
-async function callViaApi(prompt, personaPath, maxTokens, images = []) {
+async function callViaApi(prompt, systemText, maxTokens, images = []) {
   const client = await getAnthropicClient();
-  const persona = fs.readFileSync(personaPath, "utf8");
   const content = images.length ? [...imageBlocks(images), { type: "text", text: prompt }] : prompt;
   const msg = await client.messages.create({
     model: config.anthropicModel,
     max_tokens: maxTokens,
-    system: persona,
+    system: systemText,
     messages: [{ role: "user", content }],
   });
   const text = msg.content.find((b) => b.type === "text")?.text || "";
   return text.trim();
+}
+
+// Системный промпт, собранный из нескольких частей (персона + знания +
+// свежий контекст), пишем во временный файл — CLI принимает только файл.
+// Каталог отдельный от песочницы: там по-прежнему ничего нет.
+const promptsDir = path.join(os.tmpdir(), "telegram-claude-bot-prompts");
+fs.mkdirSync(promptsDir, { recursive: true });
+
+function writeSystemFile(name, text) {
+  const file = path.join(promptsDir, `${name}.md`);
+  fs.writeFileSync(file, text);
+  return file;
 }
 
 // Формат ответа (см. persona.md): первая строка "intent: <значение>", вторая
@@ -214,7 +264,7 @@ export function parseTriagedReply(raw) {
 
 function callClaude(prompt, personaPath, maxTokens, images = []) {
   return config.claudeMode === "api"
-    ? callViaApi(prompt, personaPath, maxTokens, images)
+    ? callViaApi(prompt, fs.readFileSync(personaPath, "utf8"), maxTokens, images)
     : callViaSubscription(prompt, personaPath, images);
 }
 
@@ -224,8 +274,23 @@ export async function generateReply(history, incomingText, images = [], ctx = {}
   return parseTriagedReply(raw);
 }
 
-export async function generateSecretaryReply(history, incomingText, images = []) {
-  return callClaude(buildSecretaryPrompt(history, incomingText), config.assistantPersonaPath, 2000, images);
+// Рафаэль: одна длинная сессия на чат + интернет. systemText собирает bot.js
+// (персона + знания + память + список чатов). fallbackPrompt — для режима api,
+// где сессий нет: там история передаётся текстом, как раньше.
+// -> { text, sessionId }
+export async function askRaphael({ prompt, images = [], sessionId, systemText, fallbackPrompt }) {
+  if (config.claudeMode === "api") {
+    return { text: await callViaApi(fallbackPrompt || prompt, systemText, 2000, images), sessionId: null };
+  }
+  return runSession({
+    prompt,
+    systemFile: writeSystemFile("raphael", systemText),
+    images,
+    model: config.claudeModelSmart,
+    resumeId: sessionId,
+    webTools: true,
+    timeoutMs: 240_000,
+  });
 }
 
 // См. content-persona.md — первая строка READY_TO_POST означает, что дальше
@@ -250,7 +315,34 @@ export function parseContentReply(raw) {
   };
 }
 
-export async function generateContentReply(history, incomingText, images = []) {
-  const raw = await callClaude(buildSecretaryPrompt(history, incomingText), config.contentPersonaPath, 1500, images);
+// Без сессии: история передаётся текстом (режим api и scripts/test-day.js).
+export async function generateContentReply(history, incomingText, images = [], systemText = null) {
+  const prompt = buildSecretaryPrompt(history, incomingText);
+  const raw =
+    config.claudeMode === "api"
+      ? await callViaApi(prompt, systemText || fs.readFileSync(config.contentPersonaPath, "utf8"), 1500, images)
+      : (
+          await runClaudeCli({
+            prompt,
+            systemFile: systemText ? writeSystemFile("content", systemText) : config.contentPersonaPath,
+            images,
+            model: config.claudeModelSmart,
+            timeoutMs: 120_000,
+          })
+        ).text;
   return { raw, ...parseContentReply(raw) };
+}
+
+// /day в сессии: интервью помнит весь разговор дня. Без инструментов.
+// -> { raw, sessionId, ready, ... }
+export async function continueContentSession({ prompt, images = [], sessionId, systemText }) {
+  const { text, sessionId: newId } = await runSession({
+    prompt,
+    systemFile: writeSystemFile("content", systemText),
+    images,
+    model: config.claudeModelSmart,
+    resumeId: sessionId,
+    timeoutMs: 180_000,
+  });
+  return { raw: text, sessionId: newId, ...parseContentReply(text) };
 }

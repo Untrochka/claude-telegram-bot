@@ -12,12 +12,18 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 
+// Временный state.json — тест не трогает настоящий data/.
+process.env.STATE_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "tgbot-media-")), "state.json");
 process.env.DRY_RUN = "true";
 if (!process.env.BOT_TOKEN) process.env.BOT_TOKEN = "test-token";
 if (!process.env.OWNER_TELEGRAM_ID) process.env.OWNER_TELEGRAM_ID = "1";
 
 const { toTelegramHtml, splitForTelegram } = await import("../src/format.js");
-const { generateSecretaryReply } = await import("../src/claudeClient.js");
+const { raphaelTurn } = await import("../src/raphael.js");
+// Каждый вызов — отдельный разговор (новый ключ сессии), как раньше.
+let turnNo = 0;
+const generateSecretaryReply = (history, text, images = []) =>
+  raphaelTurn({ chatKey: `secretary:test${(turnNo += 1)}`, text, images });
 const { analyzeVideoBuffer, canTranscribe, transcribeBuffer } = await import("../src/media.js");
 
 let failed = 0;

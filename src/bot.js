@@ -13,6 +13,9 @@ import {
   setMyCommands,
   sendHtmlMessage,
   sendChatAction,
+  getFile,
+  downloadFile,
+  MAX_DOWNLOAD_BYTES,
 } from "./telegram.js";
 import {
   getLastUpdateId,
@@ -48,8 +51,15 @@ import {
   getStyleSamples,
   setChatMeta,
   getChatMeta,
+  clearSession,
+  addMemory,
+  listMemory,
+  removeMemory,
+  importChatHistory,
 } from "./state.js";
-import { generateReply, generateSecretaryReply, generateContentReply } from "./claudeClient.js";
+import { generateReply } from "./claudeClient.js";
+import { raphaelTurn, resetRaphael, contentTurn, memoryText } from "./raphael.js";
+import { parseTelegramExport } from "./importer.js";
 import { getTemplate } from "./templates.js";
 import { checkPrices } from "./prices.js";
 import { MENU_COMMANDS, buildHelpText } from "./commands.js";
@@ -318,7 +328,7 @@ async function replyToBatch(chatId, batch) {
 
   // Сообщения пачки уже лежат в конце истории — в "раньше" их не дублируем.
   const history = getHistory(chatId);
-  const prior = history.slice(0, Math.max(0, history.length - texts.length));
+  const prior = history.slice(0, Math.max(0, history.length - texts.length)).slice(-config.historyLimit);
 
   const { intent, product, chat, text: modelReply } = await generateReply(prior, customerText, images, {
     chatName: getChatMeta(chatId).title,
@@ -497,35 +507,32 @@ function formatAgo(ts) {
 async function handleChatsCommand(chatId) {
   const summaries = listChatSummaries();
   if (!summaries.length) {
-    await sendMessage(chatId, "Активных клиентских чатов нет.");
+    await sendMessage(
+      chatId,
+      "Бот пока не видел ни одного чата. Он видит только сообщения, пришедшие после подключения к Telegram Business, " +
+        "и хранит их в data/ — если этот том не сохраняется между деплоями, память пропадает.\n\n" +
+        "Старую переписку можно загрузить: Telegram Desktop → чат → ⋮ → Экспорт истории → формат JSON → отправь result.json сюда."
+    );
     return;
   }
+  const kindIcon = { work: "💼", personal: "👤" };
   const lines = summaries.map((s) => {
-    const who = s.lastRole === "customer" ? "клиент" : "ты";
-    const name = s.title ? `${s.title} ` : "";
-    return `${name}#${s.chatId} — ${s.count} сообщ., последнее (${who}, ${formatAgo(s.lastTs)}): ${s.lastText.slice(0, 60)}`;
+    const who = s.lastRole === "customer" ? "он(а)" : "ты";
+    const name = s.title || "без имени";
+    return `${kindIcon[s.kind] || "•"} ${name} #${s.chatId} — ${s.count} сообщ., последнее ${formatAgo(s.lastTs)} (${who}): ${s.lastText.replace(/\s+/g, " ").slice(0, 60)}`;
   });
-  await sendMessage(chatId, lines.join("\n"));
+  const text = `Все чаты, которые видел бот (${summaries.length}):\n\n${lines.join("\n")}\n\nСпроси Рафаэля про любой из них по имени — он сам прочитает переписку.`;
+  for (const chunk of splitForTelegram(text)) await sendMessage(chatId, chunk);
 }
 
+// /chat <id или имя> — то же, что спросить Рафаэля: он сам подгрузит переписку.
 async function handleChatCommand(ownerChatId, text) {
-  const targetId = text.match(/^\/chat\s+(\S+)/i)?.[1];
-  if (!targetId) {
-    await sendMessage(ownerChatId, "Формат: /chat <id> — id смотри в /chats");
+  const target = text.replace(/^\/chat\s*/i, "").trim();
+  if (!target) {
+    await sendMessage(ownerChatId, "Формат: /chat <имя или id> — список в /chats");
     return;
   }
-  const history = getHistory(targetId);
-  if (!history.length) {
-    await sendMessage(ownerChatId, `Чат #${targetId} не найден или пуст.`);
-    return;
-  }
-  const transcript = history.map((m) => `${m.role === "customer" ? "Клиент" : "Азизхон"}: ${m.text}`).join("\n");
-  pushHistory(
-    `${SECRETARY_CHAT_PREFIX}${ownerChatId}`,
-    "context",
-    `Переписка с клиентом #${targetId}:\n${transcript}`
-  );
-  await sendMessage(ownerChatId, `Загрузил переписку с #${targetId} (${history.length} сообщ.) в контекст. Спрашивай.`);
+  await secretaryTurn(ownerChatId, `Прочитай переписку с «${target}» и коротко скажи, с кем она и на чём остановились.`);
 }
 
 const CONTENT_CHAT_PREFIX = "content:";
@@ -555,28 +562,35 @@ function handleChannelPost(post) {
   console.log("[bot] Записал ручной пост Untra.dev для баланса рубрик.");
 }
 
+function postButtons(draftId) {
+  return [
+    [
+      { text: "✅ Запостить", callback_data: `d:s:${draftId}` },
+      { text: "🗑 Не постить", callback_data: `d:x:${draftId}` },
+    ],
+  ];
+}
+
 async function runContentTurn(chatId, incomingText, images = []) {
   const key = `${CONTENT_CHAT_PREFIX}${chatId}`;
-  pushHistory(key, "azizhon", incomingText);
+  setContentMode(chatId, true); // продлеваем /day — выключится сам после паузы
+  const stopTyping = keepTyping(chatId);
 
   try {
-    const history = getHistory(key);
-    // Последние посты канала идут контекстом на каждом ходе (не в историю —
-    // её обрезает HISTORY_LIMIT), чтобы модель видела баланс рубрик до конца интервью.
-    const context = [{ role: "context", text: formatRecentPosts() }];
-    const { raw, ready, message, untra, vlog, notes } = await generateContentReply(
-      [...context, ...history.slice(0, -1)],
-      incomingText,
-      images
-    );
+    const { raw, ready, message, untra, vlog, notes } = await contentTurn({
+      sessionKey: key,
+      text: incomingText,
+      images,
+      recentPostsText: formatRecentPosts(),
+    });
+    stopTyping();
     if (!raw) {
       console.warn("[bot] Пустой ответ от контент-агента.");
       return;
     }
-    pushHistory(key, "assistant", raw);
 
     if (!ready) {
-      await sendMessage(chatId, message || raw);
+      await sendFormatted(chatId, message || raw);
       return;
     }
 
@@ -586,59 +600,108 @@ async function runContentTurn(chatId, incomingText, images = []) {
       return;
     }
 
+    // Посты — простым текстом: так же они уйдут в канал.
     for (const post of untra) {
-      const draftId = createDraft({
-        kind: "channel_post",
-        channelId: config.untraChannelId,
-        channelLabel: "Untra.dev",
-        text: post,
-      });
-      await sendMessageWithButtons(chatId, `📝 Untra.dev:\n\n${post}`, [
-        [
-          { text: "✅ Запостить", callback_data: `d:s:${draftId}` },
-          { text: "🗑 Не постить", callback_data: `d:x:${draftId}` },
-        ],
-      ]);
+      const draftId = createDraft({ kind: "channel_post", channelId: config.untraChannelId, channelLabel: "Untra.dev", text: post });
+      await sendMessageWithButtons(chatId, `📝 Untra.dev:\n\n${post}`, postButtons(draftId));
     }
-
     if (vlog) {
-      const draftId = createDraft({
-        kind: "channel_post",
-        channelId: config.vlogChannelId,
-        channelLabel: "Untra dev — vlog",
-        text: vlog,
-      });
-      await sendMessageWithButtons(chatId, `📝 Untra dev — vlog:\n\n${vlog}`, [
-        [
-          { text: "✅ Запостить", callback_data: `d:s:${draftId}` },
-          { text: "🗑 Не постить", callback_data: `d:x:${draftId}` },
-        ],
-      ]);
+      const draftId = createDraft({ kind: "channel_post", channelId: config.vlogChannelId, channelLabel: "Untra dev — vlog", text: vlog });
+      await sendMessageWithButtons(chatId, `📝 Untra dev — vlog:\n\n${vlog}`, postButtons(draftId));
     }
 
     // Подсказка к посту (угол, визуал, запасной хук) — после самих постов,
     // в канал не публикуется.
     if (notes) {
-      await sendMessage(chatId, `💡 К посту:\n${notes}`);
+      await sendFormatted(chatId, `💡 К посту:\n${notes}`);
     }
   } catch (err) {
+    stopTyping();
     console.error("[bot] Ошибка контент-агента:", err.message);
     await sendMessage(chatId, "Не смог обработать — ошибка на моей стороне, см. логи.");
   }
+}
+
+async function stopDay(chatId) {
+  setContentMode(chatId, false);
+  clearSession(`${CONTENT_CHAT_PREFIX}${chatId}`);
+  await sendMessage(chatId, "Вышел из разбора дня. Дальше отвечает Рафаэль.");
 }
 
 async function handleDayCommand(chatId, text) {
   const arg = text.slice("/day".length).trim().toLowerCase();
 
   if (arg === "stop") {
-    setContentMode(chatId, false);
-    await sendMessage(chatId, "Вышел из режима дневного разбора.");
+    await stopDay(chatId);
     return;
   }
 
   clearHistory(`${CONTENT_CHAT_PREFIX}${chatId}`);
+  clearSession(`${CONTENT_CHAT_PREFIX}${chatId}`);
   setContentMode(chatId, true);
+  await sendMessage(chatId, `📅 Разбор дня. Выйти — /stop (или сам выключится через ${Math.round(config.dayIdleMs / 3_600_000)} ч тишины).`);
   await runContentTurn(chatId, DAY_KICKOFF);
+}
+
+// --- Память (/remember, /memory, /forget) ---
+async function handleMemoryCommand(chatId, text) {
+  const [cmd, ...restParts] = text.trim().split(/\s+/);
+  const rest = restParts.join(" ").trim();
+  const command = cmd.toLowerCase();
+
+  if (command === "/remember") {
+    if (!rest) {
+      await sendMessage(chatId, "Формат: /remember факт. Например: /remember Бахтиёр из «Малибу» хочет каталог к 1 ноября");
+      return;
+    }
+    const n = addMemory(rest);
+    await sendMessage(chatId, `Запомнил (#${n}). Рафаэль и /day будут это знать.`);
+    return;
+  }
+  if (command === "/forget") {
+    const index = Number(rest) - 1;
+    await sendMessage(chatId, removeMemory(index) ? `Забыл #${rest}.` : "Такого номера нет. Список — /memory");
+    return;
+  }
+  // /memory
+  const facts = listMemory();
+  await sendMessage(chatId, facts.length ? `Что я помню:\n${memoryText()}\n\nУдалить — /forget номер` : "Пока ничего. Добавить — /remember факт");
+}
+
+// --- Импорт экспорта Telegram Desktop (result.json) ---
+function isJsonDocument(msg) {
+  const doc = msg.document;
+  return Boolean(doc && (/json/i.test(doc.mime_type || "") || /\.json$/i.test(doc.file_name || "")));
+}
+
+async function handleImport(chatId, doc) {
+  if (doc.file_size && doc.file_size > MAX_DOWNLOAD_BYTES) {
+    await sendMessage(chatId, "Файл больше 20 МБ — Telegram не отдаёт такие ботам. Экспортируй отдельные чаты или без медиа (только JSON).");
+    return;
+  }
+  const stopTyping = keepTyping(chatId);
+  try {
+    const file = await getFile(doc.file_id);
+    const json = JSON.parse((await downloadFile(file.file_path)).toString("utf8"));
+    const chats = parseTelegramExport(json, config.ownerTelegramId, config.chatStoreLimit);
+    stopTyping();
+    if (!chats.length) {
+      await sendMessage(chatId, "В файле не нашёл личных чатов. Нужен экспорт Telegram Desktop в формате JSON (result.json).");
+      return;
+    }
+    const lines = [];
+    for (const c of chats) {
+      const total = importChatHistory(c.chatId, { title: c.title, messages: c.messages });
+      for (const m of c.messages) if (m.role === "azizhon" && m.text.length < 300 && !m.text.startsWith("[")) addStyleSample(m.text);
+      lines.push(`• ${c.title || "без имени"} #${c.chatId}: +${c.messages.length} (всего ${total})`);
+    }
+    const text = `Загрузил ${chats.length} чат(ов):\n${lines.join("\n")}\n\nТеперь можно спрашивать Рафаэля про эти переписки.`;
+    for (const chunk of splitForTelegram(text)) await sendMessage(chatId, chunk);
+  } catch (err) {
+    stopTyping();
+    console.error("[bot] Ошибка импорта:", err.message);
+    await sendMessage(chatId, `Не смог разобрать файл: ${err instanceof SyntaxError ? "это не JSON" : err.message}.`);
+  }
 }
 
 async function checkReminders() {
@@ -679,9 +742,43 @@ async function handleAutoCommand(chatId, text) {
   );
 }
 
+// «печатает…» держится ~5 секунд — обновляем, пока думает модель.
+function keepTyping(chatId) {
+  sendChatAction(chatId).catch(() => {});
+  const timer = setInterval(() => sendChatAction(chatId).catch(() => {}), 4500);
+  return () => clearInterval(timer);
+}
+
+async function secretaryTurn(chatId, text, images = []) {
+  const chatKey = `${SECRETARY_CHAT_PREFIX}${chatId}`;
+  const fallbackHistory = getHistory(chatKey);
+  pushHistory(chatKey, "azizhon", text);
+  const stopTyping = keepTyping(chatId);
+  try {
+    const reply = await raphaelTurn({ chatKey, text, images, fallbackHistory });
+    stopTyping();
+    if (!reply) {
+      console.warn("[bot] Пустой ответ от Рафаэля, пропускаю отправку.");
+      return;
+    }
+    await sendFormatted(chatId, reply);
+    pushHistory(chatKey, "assistant", reply);
+  } catch (err) {
+    stopTyping();
+    console.error(`[bot] Ошибка Рафаэля:`, err.message);
+    await sendMessage(chatId, "Не смог ответить — ошибка на моей стороне, см. логи.");
+  }
+}
+
 async function handlePersonalMessage(msg) {
   if (msg.chat.type !== "private" || msg.from?.id !== config.ownerTelegramId) {
     console.warn(`[bot] Личное сообщение от чужого id ${msg.from?.id}, игнорирую.`);
+    return;
+  }
+  const chatId = msg.chat.id;
+
+  if (isJsonDocument(msg)) {
+    await handleImport(chatId, msg.document);
     return;
   }
 
@@ -690,93 +787,97 @@ async function handlePersonalMessage(msg) {
   let text = msg.text || msg.caption || "";
   let images = [];
   if (hasMedia(msg)) {
-    sendChatAction(msg.chat.id).catch(() => {});
+    const stopTyping = keepTyping(chatId);
     try {
       const media = await extractMedia(msg);
+      stopTyping();
       if (media) {
         text = media.text;
         images = media.images;
+        // Сырую расшифровку показываем сразу — видно, что именно распозналось.
         if (media.kind === "voice") {
-          await sendMessage(msg.chat.id, `🎤 ${media.transcript || "(ничего не распознал)"}`);
+          await sendMessage(chatId, `🎤 ${media.transcript || "(ничего не распознал)"}`);
           if (!media.transcript) return;
+        } else if (media.kind === "video" || media.kind === "video_note") {
+          await sendMessage(chatId, `🎥 Звук: ${media.transcript || "(речи нет или не распознал)"}`);
         }
       }
     } catch (err) {
+      stopTyping();
       console.error("[bot] Не смог разобрать медиа от Азизхона:", err.message);
       const why = err instanceof MediaError ? err.message : "ошибка на моей стороне, см. логи";
-      await sendMessage(msg.chat.id, `Не смог разобрать вложение: ${why}.`);
+      await sendMessage(chatId, `Не смог разобрать вложение: ${why}.`);
       if (!msg.caption) return;
     }
   }
   if (!text) return;
 
-  console.log(`[bot] Секретарь: сообщение от Азизхона: ${text.slice(0, 80)}`);
+  console.log(`[bot] Сообщение от Азизхона: ${text.slice(0, 80)}`);
+  const command = text.startsWith("/") ? text.split(/\s+/)[0].toLowerCase().replace(/@\w+$/, "") : null;
 
-  if (text === "/start") {
-    await sendMessage(
-      msg.chat.id,
-      `Секретарь на связи. Пиши как есть — код, тексты, вопросы. Вот все команды:\n\n${buildHelpText()}`
-    );
-    return;
-  }
-
-  if (text === "/help") {
-    await sendMessage(msg.chat.id, buildHelpText());
-    return;
-  }
-
-  if (/^\/auto(\s|$)/i.test(text)) {
-    await handleAutoCommand(msg.chat.id, text);
-    return;
-  }
-
-  if (text.startsWith("/todo")) {
-    await handleTodoCommand(msg.chat.id, text);
-    return;
-  }
-
-  if (text.startsWith("/remind")) {
-    await handleRemindCommand(msg.chat.id, text);
-    return;
-  }
-
-  if (text.startsWith("/chats")) {
-    await handleChatsCommand(msg.chat.id);
-    return;
-  }
-
-  if (/^\/chat\s+/i.test(text)) {
-    await handleChatCommand(msg.chat.id, text);
-    return;
-  }
-
-  if (text.startsWith("/day")) {
-    await handleDayCommand(msg.chat.id, text);
-    return;
-  }
-
-  if (isContentModeActive(msg.chat.id)) {
-    await runContentTurn(msg.chat.id, text, images);
-    return;
-  }
-
-  const chatKey = `${SECRETARY_CHAT_PREFIX}${msg.chat.id}`;
-  pushHistory(chatKey, "azizhon", text);
-
-  try {
-    sendChatAction(msg.chat.id).catch(() => {});
-    const history = getHistory(chatKey);
-    const reply = await generateSecretaryReply(history.slice(0, -1), text, images);
-    if (!reply) {
-      console.warn("[bot] Пустой ответ от секретаря, пропускаю отправку.");
+  switch (command) {
+    case "/start":
+      await sendMessage(chatId, `Рафаэль на связи. Пиши как есть — текстом, голосом, скрином. Вот все команды:\n\n${buildHelpText()}`);
       return;
-    }
-    await sendFormatted(msg.chat.id, reply);
-    pushHistory(chatKey, "assistant", reply);
-  } catch (err) {
-    console.error(`[bot] Ошибка секретарского ответа:`, err.message);
-    await sendMessage(msg.chat.id, "Не смог ответить — ошибка на моей стороне, см. логи.");
+    case "/help":
+      await sendMessage(chatId, buildHelpText());
+      return;
+    case "/auto":
+      await handleAutoCommand(chatId, text);
+      return;
+    case "/todo":
+      await handleTodoCommand(chatId, text);
+      return;
+    case "/remind":
+      await handleRemindCommand(chatId, text);
+      return;
+    case "/chats":
+      await handleChatsCommand(chatId);
+      return;
+    case "/chat":
+      await handleChatCommand(chatId, text);
+      return;
+    case "/day":
+      await handleDayCommand(chatId, text);
+      return;
+    case "/stop":
+      await stopDay(chatId);
+      return;
+    case "/new":
+      resetRaphael(`${SECRETARY_CHAT_PREFIX}${chatId}`);
+      clearHistory(`${SECRETARY_CHAT_PREFIX}${chatId}`);
+      await sendMessage(chatId, "Начали с чистого листа. Долгая память (/memory) и чаты остались.");
+      return;
+    case "/remember":
+    case "/memory":
+    case "/forget":
+      await handleMemoryCommand(chatId, text);
+      return;
+    default:
+      break;
   }
+
+  if (isContentModeActive(chatId)) {
+    await runContentTurn(chatId, text, images);
+    return;
+  }
+
+  await secretaryTurn(chatId, text, images);
+}
+
+// Личный чат обрабатываем в фоне (по очереди внутри чата), чтобы долгий
+// ответ Рафаэля с поиском в интернете не держал long polling и клиентов.
+const personalQueues = new Map();
+function enqueuePersonal(msg) {
+  const key = msg.chat.id;
+  const prev = personalQueues.get(key) || Promise.resolve();
+  const next = prev
+    .then(() => handlePersonalMessage(msg))
+    .catch((err) => console.error("[bot] Ошибка обработки личного сообщения:", err.message))
+    .finally(() => {
+      if (personalQueues.get(key) === next) personalQueues.delete(key);
+    });
+  personalQueues.set(key, next);
 }
 
 async function pollLoop() {
@@ -803,7 +904,7 @@ async function pollLoop() {
       if (msg) {
         await handleBusinessMessage(msg);
       } else if (update.message) {
-        await handlePersonalMessage(update.message);
+        enqueuePersonal(update.message);
       } else if (update.callback_query) {
         await handleCallbackQuery(update.callback_query);
       } else if (update.channel_post) {

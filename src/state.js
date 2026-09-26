@@ -42,8 +42,11 @@ export function getHistory(chatId) {
 export function pushHistory(chatId, role, text) {
   if (!state.chats[chatId]) state.chats[chatId] = { history: [] };
   state.chats[chatId].history.push({ role, text, ts: Date.now() });
-  const trimmed = state.chats[chatId].history.slice(-config.historyLimit);
-  state.chats[chatId].history = trimmed;
+  // Клиентские чаты храним длинно (Рафаэль анализирует переписку целиком),
+  // служебные secretary:/content: — коротко, как раньше.
+  const isClientChat = !String(chatId).includes(":");
+  const limit = isClientChat ? config.chatStoreLimit : config.historyLimit;
+  state.chats[chatId].history = state.chats[chatId].history.slice(-limit);
   // "azizhon" в чате без префикса (не secretary:/content:) — это реальный
   // клиентский чат, в котором он сам ответил. Флаг переживает обрезку
   // истории и нужен для защиты автоотправки (см. canAutoSendNow ниже).
@@ -61,13 +64,16 @@ export function clearHistory(chatId) {
 
 // Флаг "сейчас идёт /day интервью" — пока true, личные сообщения идут
 // в контент-агента, а не в обычный секретарский чат.
+// Хранится время последней активности: если /day забыли выключить, через
+// config.dayIdleMs он выключается сам. Старый формат (просто true) = выключен.
 export function isContentModeActive(chatId) {
-  return Boolean(state.contentMode?.[chatId]);
+  const mode = state.contentMode?.[chatId];
+  return Boolean(mode?.active && Date.now() - mode.ts < config.dayIdleMs);
 }
 
 export function setContentMode(chatId, active) {
   state.contentMode = state.contentMode || {};
-  state.contentMode[chatId] = active;
+  state.contentMode[chatId] = { active, ts: Date.now() };
   saveState(state);
 }
 
@@ -81,6 +87,7 @@ export function listChatSummaries() {
       return {
         chatId,
         title: data.title || "",
+        kind: data.kind || "unknown",
         count: history.length,
         lastText: last?.text || "",
         lastRole: last?.role || "",
@@ -279,4 +286,74 @@ export function setChatMeta(chatId, meta) {
 export function getChatMeta(chatId) {
   const chat = state.chats[chatId] || {};
   return { title: chat.title || "", kind: chat.kind || "unknown" };
+}
+
+// --- Сессии Claude (claude --resume): память Рафаэля и /day как в обычном чате ---
+export function getSession(key) {
+  return state.sessions?.[key] || null;
+}
+
+export function setSession(key, sessionId) {
+  state.sessions = state.sessions || {};
+  state.sessions[key] = sessionId;
+  saveState(state);
+}
+
+export function clearSession(key) {
+  if (state.sessions) delete state.sessions[key];
+  saveState(state);
+}
+
+// --- Долгая память: факты, которые Мастер попросил запомнить (/remember) ---
+export function addMemory(text) {
+  state.memory = state.memory || [];
+  state.memory.push({ text: text.trim(), ts: Date.now() });
+  saveState(state);
+  return state.memory.length;
+}
+
+export function listMemory() {
+  return state.memory || [];
+}
+
+export function removeMemory(index) {
+  if (!state.memory?.[index]) return false;
+  state.memory.splice(index, 1);
+  saveState(state);
+  return true;
+}
+
+// --- Импорт истории из экспорта Telegram Desktop ---
+// Старые сообщения из экспорта + то, что бот уже видел; без дублей, по времени.
+export function importChatHistory(chatId, { title, messages }) {
+  if (!state.chats[chatId]) state.chats[chatId] = { history: [] };
+  const chat = state.chats[chatId];
+  const seen = new Set(chat.history.map((m) => `${m.ts}|${m.text}`));
+  const merged = [...chat.history];
+  for (const m of messages) {
+    const key = `${m.ts}|${m.text}`;
+    if (!seen.has(key)) {
+      merged.push(m);
+      seen.add(key);
+    }
+  }
+  merged.sort((a, b) => a.ts - b.ts);
+  chat.history = merged.slice(-config.chatStoreLimit);
+  if (title && !chat.title) chat.title = title;
+  const own = chat.history.filter((m) => m.role === "azizhon");
+  if (own.length) {
+    chat.azizhonEverReplied = true;
+    chat.lastAzizhonTs = Math.max(chat.lastAzizhonTs || 0, ...own.map((m) => m.ts));
+  }
+  saveState(state);
+  return chat.history.length;
+}
+
+// Поиск клиентского чата по id, @username или части имени — для Рафаэля.
+export function findChats(query) {
+  const q = String(query).trim().replace(/^#/, "").toLowerCase();
+  const entries = Object.entries(state.chats || {}).filter(([key]) => !key.includes(":"));
+  const exact = entries.filter(([key]) => key === q);
+  if (exact.length) return exact.map(([key]) => key);
+  return entries.filter(([, data]) => (data.title || "").toLowerCase().includes(q)).map(([key]) => key);
 }

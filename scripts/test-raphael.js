@@ -27,7 +27,7 @@ function check(name, cond) {
 }
 
 async function ask(text) {
-  const reply = await raphaelTurn({ chatKey: "secretary:111", text });
+  const { text: reply } = await raphaelTurn({ chatKey: "secretary:111", text });
   console.log(`\n> ${text}\n${reply}\n`);
   return reply;
 }

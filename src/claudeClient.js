@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "./config.js";
+import { getModel } from "./models.js";
 
 // Пустая песочница вместо папки проекта: даже если что-то из read-only
 // набора инструментов сработает в обход --allowedTools "", там физически
@@ -87,8 +88,24 @@ function childEnv() {
 }
 
 // -> { text, sessionId }
-function runClaudeCli({ prompt, systemFile, images = [], model, resumeId, webTools = false, timeoutMs = 60_000 }) {
+// onDelta(text) — если передан, ответ стримится: вызывается с накопленным
+// текстом текущего сообщения модели по мере генерации (для «печатает» в
+// Telegram). Финальный текст всё равно берётся из события result.
+function runClaudeCli(opts) {
+  return runClaudeCliOnce(opts).catch((err) => {
+    // Старый CLI без --include-partial-messages — повторяем без стриминга.
+    if (opts.onDelta && /include-partial-messages|unknown option/i.test(err.message)) {
+      console.warn("[claude] Стриминг не поддерживается этим CLI, отвечаю без него.");
+      return runClaudeCliOnce({ ...opts, onDelta: null });
+    }
+    throw err;
+  });
+}
+
+function runClaudeCliOnce({ prompt, systemFile, images = [], model, resumeId, webTools = false, timeoutMs = 60_000, onDelta = null, role = "?" }) {
   const withImages = images.length > 0;
+  const streamOut = withImages || Boolean(onDelta);
+  const startedAt = Date.now();
   return new Promise((resolve, reject) => {
     const child = spawn(
       "claude",
@@ -102,16 +119,53 @@ function runClaudeCli({ prompt, systemFile, images = [], model, resumeId, webToo
         "dontAsk",
         ...(model ? ["--model", model] : []),
         ...(resumeId ? ["--resume", resumeId] : []),
-        ...(withImages
-          ? ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
-          : ["--output-format", "json"]),
+        ...(withImages ? ["--input-format", "stream-json"] : []),
+        ...(streamOut ? ["--output-format", "stream-json", "--verbose"] : ["--output-format", "json"]),
+        ...(onDelta ? ["--include-partial-messages"] : []),
       ],
       { stdio: ["pipe", "pipe", "pipe"], cwd: sandboxDir, env: childEnv() }
     );
 
     let stdout = "";
     let stderr = "";
-    child.stdout.on("data", (d) => (stdout += d));
+    let lineBuf = "";
+    let current = "";
+    let resultEvent = null;
+
+    const handleLine = (line) => {
+      if (!line.trim()) return;
+      let ev;
+      try {
+        ev = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (ev.type === "result") {
+        resultEvent = ev;
+        return;
+      }
+      if (!onDelta || ev.type !== "stream_event" || ev.parent_tool_use_id) return;
+      const e = ev.event || {};
+      if (e.type === "message_start") {
+        current = "";
+      } else if (e.type === "content_block_delta" && e.delta?.type === "text_delta") {
+        current += e.delta.text;
+        try {
+          onDelta(current);
+        } catch (cbErr) {
+          console.warn("[claude] onDelta упал:", cbErr.message);
+        }
+      }
+    };
+
+    child.stdout.on("data", (d) => {
+      stdout += d;
+      if (!streamOut) return;
+      lineBuf += d;
+      const parts = lineBuf.split("\n");
+      lineBuf = parts.pop();
+      for (const line of parts) handleLine(line);
+    });
     child.stderr.on("data", (d) => (stderr += d));
 
     const timeout = setTimeout(() => {
@@ -121,19 +175,15 @@ function runClaudeCli({ prompt, systemFile, images = [], model, resumeId, webToo
 
     child.on("close", (code) => {
       clearTimeout(timeout);
+      const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
+      console.log(`[claude] role=${role} model=${model || "default"} ${secs}s prompt=${String(prompt).length} симв.${resumeId ? " resume" : ""}${onDelta ? " stream" : ""}`);
       if (code !== 0) {
-        reject(new Error(`claude -p завершился с кодом ${code}: ${stderr || stdout}`));
+        reject(new Error(`claude -p завершился с кодом ${code}: ${stderr || stdout.slice(-1000)}`));
         return;
       }
       try {
-        const parsed = withImages
-          ? stdout
-              .split("\n")
-              .filter((line) => line.trim())
-              .map((line) => JSON.parse(line))
-              .reverse()
-              .find((event) => event.type === "result")
-          : JSON.parse(stdout);
+        if (streamOut && lineBuf) handleLine(lineBuf);
+        const parsed = streamOut ? resultEvent : JSON.parse(stdout);
         if (!parsed) throw new Error("нет события result");
         if (parsed.is_error) throw new Error(parsed.result || "claude вернул ошибку");
         resolve({ text: parsed.result?.trim() || "", sessionId: parsed.session_id || null });
@@ -156,8 +206,8 @@ function runClaudeCli({ prompt, systemFile, images = [], model, resumeId, webToo
 }
 
 // Клиентский путь: без инструментов, без сессий, быстрая модель.
-async function callViaSubscription(prompt, personaPath, images = [], model = config.claudeModelFast) {
-  const { text } = await runClaudeCli({ prompt, systemFile: personaPath, images, model });
+async function callViaSubscription(prompt, personaPath, images = [], model = getModel("clients")) {
+  const { text } = await runClaudeCli({ prompt, systemFile: personaPath, images, model, role: "clients" });
   return text;
 }
 
@@ -278,7 +328,7 @@ export async function generateReply(history, incomingText, images = [], ctx = {}
 // (персона + знания + память + список чатов). fallbackPrompt — для режима api,
 // где сессий нет: там история передаётся текстом, как раньше.
 // -> { text, sessionId }
-export async function askRaphael({ prompt, images = [], sessionId, systemText, fallbackPrompt }) {
+export async function askRaphael({ prompt, images = [], sessionId, systemText, fallbackPrompt, onDelta = null }) {
   if (config.claudeMode === "api") {
     return { text: await callViaApi(fallbackPrompt || prompt, systemText, 2000, images), sessionId: null };
   }
@@ -286,10 +336,12 @@ export async function askRaphael({ prompt, images = [], sessionId, systemText, f
     prompt,
     systemFile: writeSystemFile("raphael", systemText),
     images,
-    model: config.claudeModelSmart,
+    model: getModel("raphael"),
     resumeId: sessionId,
     webTools: true,
     timeoutMs: 240_000,
+    onDelta,
+    role: "raphael",
   });
 }
 
@@ -326,8 +378,9 @@ export async function generateContentReply(history, incomingText, images = [], s
             prompt,
             systemFile: systemText ? writeSystemFile("content", systemText) : config.contentPersonaPath,
             images,
-            model: config.claudeModelSmart,
+            model: getModel("day"),
             timeoutMs: 120_000,
+            role: "day",
           })
         ).text;
   return { raw, ...parseContentReply(raw) };
@@ -335,14 +388,33 @@ export async function generateContentReply(history, incomingText, images = [], s
 
 // /day в сессии: интервью помнит весь разговор дня. Без инструментов.
 // -> { raw, sessionId, ready, ... }
-export async function continueContentSession({ prompt, images = [], sessionId, systemText }) {
+export async function continueContentSession({ prompt, images = [], sessionId, systemText, onDelta = null }) {
   const { text, sessionId: newId } = await runSession({
     prompt,
     systemFile: writeSystemFile("content", systemText),
     images,
-    model: config.claudeModelSmart,
+    model: getModel("day"),
     resumeId: sessionId,
     timeoutMs: 180_000,
+    onDelta,
+    role: "day",
   });
   return { raw: text, sessionId: newId, ...parseContentReply(text) };
+}
+
+// Одноразовый вызов без инструментов и без сессии — для агента: фильтр постов,
+// писатель комментариев, адаптации постов под Contra/LinkedIn, сводки.
+// Вход часто содержит ЧУЖОЙ текст (посты каналов, Reddit) — поэтому никаких
+// инструментов (--allowedTools ""), cwd — пустая песочница.
+let oneShotCounter = 0;
+export async function runOneShot({ role, system, prompt, timeoutMs = 90_000, maxTokens = 800 }) {
+  if (config.claudeMode === "api") return callViaApi(prompt, system, maxTokens);
+  const { text } = await runClaudeCli({
+    prompt,
+    systemFile: writeSystemFile(`oneshot-${role}-${(oneShotCounter = (oneShotCounter + 1) % 20)}`, system),
+    model: getModel(role),
+    timeoutMs,
+    role,
+  });
+  return text;
 }

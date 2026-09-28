@@ -15,6 +15,12 @@ export const MENU_COMMANDS = [
   { command: "new", description: "Рафаэль: начать разговор заново" },
   { command: "remember", description: "Запомнить факт надолго" },
   { command: "memory", description: "Что бот помнит" },
+  { command: "plan", description: "План на сегодня по площадкам" },
+  { command: "comments", description: "Агент комментариев: статус, check, on/off" },
+  { command: "watch", description: "Каналы для комментариев" },
+  { command: "reddit", description: "Найти вопросы на Reddit сейчас" },
+  { command: "strategy", description: "Стратегии и правки к ним" },
+  { command: "model", description: "Модели Claude по ролям" },
 ];
 
 // Группы для /help и /start — ровно в этом порядке.
@@ -112,6 +118,57 @@ export const HELP_GROUPS = [
         usage: "/memory, /forget <номер>",
         text: "посмотреть, что бот помнит, и удалить лишнее.",
         example: "/forget 2",
+      },
+    ],
+  },
+  {
+    title: "Агент: посты и комментарии",
+    items: [
+      {
+        kind: "info",
+        usage: "Напоминания",
+        text: "по расписанию из стратегий: пост в Untra.dev (Вт/Чт/Сб), пост на Contra (готовлю английскую версию), комментарии на Contra и LinkedIn, Reddit, утренняя сводка в 11:00, отчёт в воскресенье. Кнопки: ✅ Сделал / ⏰ Позже / 🙅 Пропускаю.",
+      },
+      {
+        kind: "command",
+        usage: "/plan",
+        text: "что сегодня по плану на всех площадках.",
+        example: "/plan",
+      },
+      {
+        kind: "info",
+        usage: "Комментарии в Telegram",
+        text: "сам ищу каналы, слежу за новыми постами и присылаю черновик комментария: ✅ от канала / 👤 от тебя / ✏️ переписать / 🗑. Без твоей кнопки ничего не уходит. Лимиты на день — защита аккаунта.",
+      },
+      {
+        kind: "command",
+        usage: "/comments, /comments check, /comments on|off",
+        text: "статус агента, проверить каналы сейчас, включить/выключить.",
+        example: "/comments check",
+      },
+      {
+        kind: "command",
+        usage: "/watch, /watch find, /watch add @канал, /watch remove @канал",
+        text: "список каналов, поиск новых сейчас, добавить/убрать вручную (обычно не нужно — я сам).",
+        example: "/watch find",
+      },
+      {
+        kind: "command",
+        usage: "/reddit",
+        text: "найти свежие вопросы на Reddit и написать черновики ответов (отвечаешь сам по ссылке).",
+        example: "/reddit",
+      },
+      {
+        kind: "command",
+        usage: "/strategy, /strategy <имя>, /strategy <имя> + <правка>",
+        text: "стратегии площадок и твои правки к ним. Проще — просто скажи Рафаэлю «теперь на Contra 4 поста в неделю», он предложит сохранить.",
+        example: "/strategy contra",
+      },
+      {
+        kind: "command",
+        usage: "/model, /model <роль> <haiku|sonnet|opus>",
+        text: "какая модель в какой роли (raphael, day, clients, filter, writer). haiku — быстрый, opus — самый умный.",
+        example: "/model raphael opus",
       },
     ],
   },

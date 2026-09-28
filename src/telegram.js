@@ -135,3 +135,43 @@ export async function sendHtmlMessage(chatId, html, plainFallback) {
 export async function sendChatAction(chatId, action = "typing") {
   return call("sendChatAction", { chat_id: chatId, action });
 }
+
+// Редактирование с HTML-разметкой (стриминг ответа Рафаэля). Без разметки,
+// если Telegram её не принял. "message is not modified" — не ошибка.
+export async function editHtmlMessage(chatId, messageId, html, plainFallback) {
+  try {
+    return await call("editMessageText", { chat_id: chatId, message_id: messageId, text: html, parse_mode: "HTML" });
+  } catch (err) {
+    if (/message is not modified/i.test(err.message)) return null;
+    if (!/can't parse entities|unsupported start tag|can't find end tag/i.test(err.message)) throw err;
+    return call("editMessageText", { chat_id: chatId, message_id: messageId, text: plainFallback });
+  }
+}
+
+// Тихое редактирование простым текстом (промежуточные кадры стриминга).
+export async function editPlainQuiet(chatId, messageId, text) {
+  try {
+    return await call("editMessageText", { chat_id: chatId, message_id: messageId, text });
+  } catch (err) {
+    if (/message is not modified/i.test(err.message)) return null;
+    throw err;
+  }
+}
+
+export async function editMessageWithButtons(chatId, messageId, text, inlineKeyboard) {
+  try {
+    return await call("editMessageText", {
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      reply_markup: { inline_keyboard: inlineKeyboard },
+    });
+  } catch (err) {
+    if (/message is not modified/i.test(err.message)) return null;
+    throw err;
+  }
+}
+
+export async function deleteMessage(chatId, messageId) {
+  return call("deleteMessage", { chat_id: chatId, message_id: messageId });
+}

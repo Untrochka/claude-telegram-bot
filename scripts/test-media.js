@@ -23,7 +23,7 @@ const { raphaelTurn } = await import("../src/raphael.js");
 // Каждый вызов — отдельный разговор (новый ключ сессии), как раньше.
 let turnNo = 0;
 const generateSecretaryReply = (history, text, images = []) =>
-  raphaelTurn({ chatKey: `secretary:test${(turnNo += 1)}`, text, images });
+  raphaelTurn({ chatKey: `secretary:test${(turnNo += 1)}`, text, images }).then((r) => r.text);
 const { analyzeVideoBuffer, canTranscribe, transcribeBuffer } = await import("../src/media.js");
 
 let failed = 0;

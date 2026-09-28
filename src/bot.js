@@ -10,6 +10,7 @@ import {
   deleteBusinessMessages,
   editMessageText,
   answerCallbackQuery,
+  setOwnerLogger,
   setMyCommands,
   sendHtmlMessage,
   sendChatAction,
@@ -60,6 +61,7 @@ import {
   setAgentValue,
   updateDraft,
   findDraftByCardMessage,
+  addBotNote,
 } from "./state.js";
 import { generateReply } from "./claudeClient.js";
 import { raphaelTurn, resetRaphael, contentTurn, memoryText, visibleRaphaelText } from "./raphael.js";
@@ -830,6 +832,27 @@ function keepTyping(chatId) {
   return () => clearInterval(timer);
 }
 
+// Команды, которые Рафаэль запускает сам ([[ACTION: …]]).
+async function runRaphaelAction(chatId, { name, arg }) {
+  const map = {
+    watch_find: "/watch find",
+    watch_reset: "/watch reset",
+    watch_add: `/watch add ${arg}`,
+    watch_remove: `/watch remove ${arg}`,
+    comments_check: "/comments check",
+  };
+  try {
+    if (map[name]) {
+      if ((name === "watch_add" || name === "watch_remove") && !arg) return;
+      if (name.startsWith("watch")) await handleWatchCommand(chatId, map[name]);
+      else await handleCommentsCommand(chatId, map[name]);
+    } else if (name === "reddit") await handleRedditCommand(chatId);
+    else if (name === "plan") await sendMessage(chatId, morningBriefText());
+  } catch (err) {
+    console.error(`[bot] Действие Рафаэля ${name} упало:`, err.message);
+  }
+}
+
 async function secretaryTurn(chatId, text, images = []) {
   const chatKey = `${SECRETARY_CHAT_PREFIX}${chatId}`;
   const fallbackHistory = getHistory(chatKey);
@@ -837,7 +860,7 @@ async function secretaryTurn(chatId, text, images = []) {
   const stopTyping = keepTyping(chatId);
   const streamer = createStreamer(chatId, { transform: visibleRaphaelText });
   try {
-    const { text: reply, notes, rewrites } = await raphaelTurn({
+    const { text: reply, notes, rewrites, actions } = await raphaelTurn({
       chatKey,
       text,
       images,
@@ -858,6 +881,7 @@ async function secretaryTurn(chatId, text, images = []) {
       const ok = await applyDraftRewrite(rw.draftId, rw.instruction);
       if (!ok) await sendMessage(chatId, `Черновик #${rw.draftId} уже не актуален.`);
     }
+    for (const a of actions || []) await runRaphaelAction(chatId, a);
   } catch (err) {
     stopTyping();
     await streamer.discard();
@@ -954,7 +978,7 @@ async function handleWatchCommand(chatId, text) {
       const added = res?.added?.length ? res.added.map((u) => `@${u}`).join(", ") : "никого";
       await sendMessage(chatId, `🔎 Поиск каналов закончен. Добавил: ${added}.${res?.removed?.length ? ` Убрал: ${res.removed.map((u) => `@${u}`).join(", ")}.` : ""}${res?.note ? `\n${res.note}` : ""}\n\n${watchListText()}`);
     });
-    await sendMessage(chatId, started ? `${cleared ? `Убрал ${cleared} найденных раньше каналов. ` : ""}Ищу каналы (СНГ на русском и англоязычные), это займёт пару минут — паузы между запросами, чтобы Telegram не ругался…` : "Поиск уже идёт.");
+    await sendMessage(chatId, started ? `${cleared ? `Убрал ${cleared} найденных раньше каналов. ` : ""}Ищу каналы (СНГ на русском и англоязычные) — займёт 3–6 минут: паузы между запросами, чтобы Telegram не ругался. Список пришлю сам…` : "Поиск уже идёт.");
     return;
   }
   for (const chunk of splitForTelegram(watchListText())) await sendMessage(chatId, chunk);
@@ -1210,6 +1234,7 @@ async function registerCommands() {
 }
 
 registerCommands();
+setOwnerLogger((text) => addBotNote(text));
 startMtproto().catch((err) => console.error("[mtproto] Старт:", err.message));
 // Тик агента независимо от long polling (getUpdates ждёт до 30 с).
 setInterval(agentTick, 20_000);

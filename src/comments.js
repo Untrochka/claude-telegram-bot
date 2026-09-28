@@ -28,6 +28,7 @@ import { sendMessage, sendMessageWithButtons, editMessageText, editMessageWithBu
 import {
   isMtprotoReady,
   searchChannels,
+  channelRecommendations,
   channelInfo,
   channelPosts,
   sendComment,
@@ -48,29 +49,54 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const DISCOVERY_QUERIES = {
   business: [
     "стартапы",
+    "стартап",
     "продуктовый менеджмент",
+    "продакт",
+    "маркетинг",
     "маркетинг для бизнеса",
     "предприниматели",
+    "предпринимательство",
+    "бизнес",
+    "продажи",
     "продажи в Telegram",
     "e-commerce",
-    "маркетплейсы Wildberries Ozon",
-    "SMM продвижение",
-    "no-code автоматизация",
-    "startup founders",
+    "ecommerce",
+    "маркетплейсы",
+    "Wildberries",
+    "Ozon селлеры",
+    "SMM",
+    "таргет",
+    "no-code",
+    "автоматизация бизнеса",
+    "ИИ для бизнеса",
+    "AI стартапы",
+    "startup",
+    "founders",
     "indie hackers",
     "SaaS",
+    "growth",
   ],
   dev: [
     "frontend",
+    "фронтенд",
     "React",
     "Next.js",
     "JavaScript",
     "TypeScript",
     "веб разработка",
+    "вебразработка",
+    "программирование",
+    "разработчик",
     "Telegram Mini Apps",
-    "фриланс разработчик",
+    "Telegram боты",
+    "фриланс",
+    "фрилансер",
     "web development",
-    "UI UX design",
+    "webdev",
+    "UI UX",
+    "дизайн интерфейсов",
+    "вайбкодинг",
+    "Cursor AI",
   ],
 };
 
@@ -103,7 +129,7 @@ export function scoreChannel({ perWeek, avgReplies, participants }) {
 }
 
 export function channelQualifies({ linkedChatId, perWeek, avgReplies, participants }) {
-  return Boolean(linkedChatId) && perWeek >= 3 && avgReplies >= 1 && participants >= 800 && participants <= 150_000;
+  return Boolean(linkedChatId) && perWeek >= 2 && avgReplies >= 0.5 && participants >= 500 && participants <= 300_000;
 }
 
 // Ответ фильтра: "yes: причина" / "no: причина".
@@ -243,7 +269,7 @@ export async function runDiscovery({ force = false } = {}) {
           const u = ch.username;
           const key = u.toLowerCase();
           if (key === own || ex.has(u) || getWatch()[u] || candidates.has(u)) continue;
-          if (ch.participants && (ch.participants < 800 || ch.participants > 150_000)) continue;
+          if (ch.participants && (ch.participants < 500 || ch.participants > 300_000)) continue;
           if (UZ_RE.test(`${ch.title} ${u}`)) continue;
           candidates.set(u, { ...ch, group });
         }
@@ -251,8 +277,27 @@ export async function runDiscovery({ force = false } = {}) {
       }
     }
 
+    // Похожие каналы от Telegram для тех, что уже в списке (самые релевантные кандидаты).
+    for (const [seed, c] of Object.entries(getWatch())) {
+      try {
+        for (const ch of await channelRecommendations(seed)) {
+          const u = ch.username;
+          if (u.toLowerCase() === own || ex.has(u) || getWatch()[u] || candidates.has(u)) continue;
+          if (ch.participants && (ch.participants < 500 || ch.participants > 300_000)) continue;
+          if (UZ_RE.test(`${ch.title} ${u}`)) continue;
+          candidates.set(u, { ...ch, group: c.group || "dev" });
+        }
+      } catch (err) {
+        if (err instanceof FloodWait) throw err;
+      }
+      await sleep(1200);
+    }
+
     const evaluated = [];
-    for (const cand of [...candidates.values()].slice(0, 30)) {
+    const need = Math.max(0, config.watchMax - Object.keys(getWatch()).length);
+    for (const cand of [...candidates.values()].slice(0, 80)) {
+      // Хватит, если подходящих уже с запасом.
+      if (evaluated.length >= need + 5) break;
       const info = await channelInfo(cand.username);
       await sleep(1200);
       if (!info.linkedChatId) continue;

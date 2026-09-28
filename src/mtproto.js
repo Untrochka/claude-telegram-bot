@@ -177,6 +177,14 @@ export async function searchChannels(q, limit = 20) {
     .map((c) => ({ username: c.username, title: c.title || "", participants: c.participantsCount || 0 }));
 }
 
+// Похожие каналы (рекомендации Telegram) — хороший источник, когда уже есть удачные каналы.
+export async function channelRecommendations(username) {
+  const res = await safe(() => client.invoke(new Api.channels.GetChannelRecommendations({ channel: username })));
+  return (res.chats || [])
+    .filter((c) => c.className === "Channel" && c.broadcast && c.username)
+    .map((c) => ({ username: c.username, title: c.title || "", participants: c.participantsCount || 0 }));
+}
+
 export async function channelInfo(username) {
   const full = await safe(() => client.invoke(new Api.channels.GetFullChannel({ channel: username })));
   const fc = full.fullChat;

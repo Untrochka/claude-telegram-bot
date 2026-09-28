@@ -46,13 +46,31 @@ export async function sendBusinessMessage(connectionId, chatId, text) {
   });
 }
 
+// Лог сообщений бота владельцу (карточки, отчёты, напоминания) — чтобы
+// Рафаэль знал, что бот присылал «сам». Ставится из bot.js.
+let ownerLogger = null;
+export function setOwnerLogger(fn) {
+  ownerLogger = fn;
+}
+function logOwner(chatId, text) {
+  if (!ownerLogger || String(chatId) !== String(config.ownerTelegramId)) return;
+  if (!text || String(text).endsWith(" ▌")) return; // кадры стриминга не пишем
+  try {
+    ownerLogger(String(text));
+  } catch {
+    // лог не должен ломать отправку
+  }
+}
+
 // Обычное личное сообщение (не Business API) — канал секретаря с владельцем.
 export async function sendMessage(chatId, text) {
+  logOwner(chatId, text);
   return call("sendMessage", { chat_id: chatId, text });
 }
 
 // Личное сообщение с inline-кнопками — карточка черновика на утверждение.
 export async function sendMessageWithButtons(chatId, text, inlineKeyboard) {
+  logOwner(chatId, text);
   return call("sendMessage", {
     chat_id: chatId,
     text,

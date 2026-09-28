@@ -430,3 +430,16 @@ export function listRecentDrafts(limit = 6) {
     .sort((a, b) => Number(b.id) - Number(a.id))
     .slice(0, limit);
 }
+
+// Последние сообщения бота владельцу (не Рафаэля) — для контекста Рафаэля.
+export function addBotNote(text) {
+  const a = agent();
+  a.botNotes = a.botNotes || [];
+  a.botNotes.push({ text: text.slice(0, 500), ts: Date.now() });
+  if (a.botNotes.length > 12) a.botNotes.splice(0, a.botNotes.length - 12);
+  saveState(state);
+}
+
+export function getBotNotes() {
+  return agent().botNotes || [];
+}

@@ -135,6 +135,9 @@ function runClaudeCliOnce({ prompt, systemFile, images = [], model, resumeId, we
     let lineBuf = "";
     let current = "";
     let resultEvent = null;
+    // Весь текст модели за ход (после поиска в интернете result содержит только
+    // последнее сообщение — первые фразы пропадали).
+    const allText = [];
 
     const handleLine = (line) => {
       if (!line.trim()) return;
@@ -146,6 +149,14 @@ function runClaudeCliOnce({ prompt, systemFile, images = [], model, resumeId, we
       }
       if (ev.type === "result") {
         resultEvent = ev;
+        return;
+      }
+      if (ev.type === "assistant" && !ev.parent_tool_use_id) {
+        const t = (ev.message?.content || [])
+          .filter((b) => b.type === "text")
+          .map((b) => b.text)
+          .join("");
+        if (t.trim()) allText.push(t.trim());
         return;
       }
       if (!onDelta || ev.type !== "stream_event" || ev.parent_tool_use_id) return;
@@ -190,7 +201,9 @@ function runClaudeCliOnce({ prompt, systemFile, images = [], model, resumeId, we
         const parsed = streamOut ? resultEvent : JSON.parse(stdout);
         if (!parsed) throw new Error("нет события result");
         if (parsed.is_error) throw new Error(parsed.result || "claude вернул ошибку");
-        resolve({ text: parsed.result?.trim() || "", sessionId: parsed.session_id || null });
+        const joined = allText.join("\n\n").trim();
+        const finalText = parsed.result?.trim() || "";
+        resolve({ text: joined.length > finalText.length ? joined : finalText, sessionId: parsed.session_id || null });
       } catch (e) {
         reject(new Error(`Не удалось разобрать ответ claude -p: ${e.message}\n${stdout.slice(-500)}`));
       }

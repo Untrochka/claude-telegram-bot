@@ -12,7 +12,8 @@
     "test:media": "node scripts/test-media.js",
     "test:raphael": "node scripts/test-raphael.js",
     "test:agent": "node scripts/test-agent.js",
-    "mtproto:login": "node scripts/mtproto-login.js"
+    "mtproto:login": "node scripts/mtproto-login.js",
+    "mtproto:qr": "node scripts/mtproto-login.js --qr"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

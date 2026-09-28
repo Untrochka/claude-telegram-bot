@@ -60,8 +60,29 @@ export const config = {
   // для Рафаэля и /day можно поставить opus.
   claudeModelSmart: (process.env.CLAUDE_MODEL_SMART || "sonnet").trim(), // Рафаэль, /day
   claudeModelFast: (process.env.CLAUDE_MODEL_FAST || "sonnet").trim(), // автоответы клиентам
+  // Быстрая модель для фильтров (подходит ли пост для комментария и т.п.).
+  claudeModelFilter: (process.env.CLAUDE_MODEL_FILTER || "haiku").trim(),
   // /day выключается сам, если столько времени не было сообщений.
   dayIdleMs: Number(process.env.DAY_IDLE_HOURS || 3) * 3_600_000,
+
+  // --- MTProto (userbot твоего аккаунта, пакет telegram/gramjs) ---
+  // Без этих трёх переменных бот работает как раньше, без чтения чатов и агента комментариев.
+  tgApiId: Number(process.env.TG_API_ID || 0),
+  tgApiHash: (process.env.TG_API_HASH || "").trim(),
+  tgSession: (process.env.TG_SESSION || "").trim(),
+
+  // --- Агент комментариев ---
+  commentsEnabled: (process.env.COMMENTS_ENABLED || "true").trim().toLowerCase() === "true",
+  watchMax: Number(process.env.WATCH_MAX || 20),
+  commentDraftsPerDay: Number(process.env.COMMENT_DRAFTS_PER_DAY || 15),
+  maxCommentsPerDay: Number(process.env.MAX_COMMENTS_PER_DAY || 10),
+  maxJoinsPerDay: Number(process.env.MAX_JOINS_PER_DAY || 4),
+  // Как часто проверять новые посты в отслеживаемых каналах, минут.
+  watchPollMinutes: Number(process.env.WATCH_POLL_MINUTES || 12),
+
+  // --- Планировщик напоминаний (время Ташкента) ---
+  plannerEnabled: (process.env.PLANNER_ENABLED || "true").trim().toLowerCase() === "true",
+  strategiesDir: path.join(__dirname, "strategies"),
 };
 
 if (config.claudeMode === "api" && !config.anthropicApiKey) {

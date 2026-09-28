@@ -1,0 +1,118 @@
+// Офлайн-тесты агента (без Telegram и без Claude): парсеры, фильтры постов,
+// метрики каналов, расписание, стратегии, модели.
+// Живой тест стриминга Рафаэля (дёргает claude -p на haiku): node scripts/test-agent.js --live
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+
+process.env.BOT_TOKEN ||= "test-token";
+process.env.OWNER_TELEGRAM_ID ||= "111";
+process.env.DRY_RUN = "true";
+const tmpState = path.join(os.tmpdir(), `agent-test-state-${Date.now()}.json`);
+process.env.STATE_PATH = tmpState;
+
+const { parseFilter, parseWriter, postPassesHeuristics, channelMetrics, channelQualifies, scoreChannel } = await import("../src/comments.js");
+const { redditPostPasses } = await import("../src/reddit.js");
+const { tashkentNow, shouldFire, TASKS, taskDueToday } = await import("../src/planner.js");
+const { strategiesFor, readStrategy, addStrategyNote, removeStrategyNote, strategiesBlock } = await import("../src/strategies.js");
+const { getModel, setModel, resetModels } = await import("../src/models.js");
+const { visibleRaphaelText } = await import("../src/raphael.js");
+
+let failed = 0;
+function check(name, cond) {
+  console.log(`${cond ? "OK  " : "FAIL"} ${name}`);
+  if (!cond) failed += 1;
+}
+
+// Фильтр / писатель
+check("filter yes", parseFilter("yes: про продажи в телеграм").ok === true);
+check("filter no", parseFilter("no: политика").ok === false);
+check("filter да", parseFilter("да — про клиентов").ok === true);
+check("filter мусор -> no", parseFilter("не знаю").ok === false);
+check("writer SKIP", parseWriter("SKIP") === null);
+check("writer кавычки", parseWriter("«Короткий коммент по делу»") === "Короткий коммент по делу");
+check("writer префикс", parseWriter("Комментарий: текст") === "текст");
+
+// Эвристики постов
+const now = Date.now();
+const good = { text: "x".repeat(120) + " как вы принимаете заказы в телеграм?", date: now - 30 * 60_000, hasComments: true };
+check("пост ок", postPassesHeuristics(good, now).ok);
+check("пост старый", !postPassesHeuristics({ ...good, date: now - 5 * 3_600_000 }, now).ok);
+check("пост короткий", !postPassesHeuristics({ ...good, text: "коротко" }, now).ok);
+check("пост без комментов", !postPassesHeuristics({ ...good, hasComments: false }, now).ok);
+check("пост реклама", !postPassesHeuristics({ ...good, text: good.text + " #реклама erid: 123" }, now).ok);
+
+// Метрики каналов
+const day = 86_400_000;
+const posts = Array.from({ length: 10 }, (_, i) => ({ date: now - i * day, replies: 4 }));
+const m = channelMetrics(posts, now);
+check("perWeek ~5", m.perWeek === 5);
+check("avgReplies 4", m.avgReplies === 4);
+check("канал подходит", channelQualifies({ linkedChatId: "1", ...m, participants: 5000 }));
+check("без комментов не подходит", !channelQualifies({ linkedChatId: null, ...m, participants: 5000 }));
+check("огромный не подходит", !channelQualifies({ linkedChatId: "1", ...m, participants: 500000 }));
+check("score > 0", scoreChannel({ ...m, participants: 5000 }) > 0);
+
+// Reddit
+const rp = { title: "How do I cache fetch in Next.js app router?", selftext: "I tried revalidate but it doesn't work as I expect in production", created_utc: now / 1000 - 3600, num_comments: 2 };
+check("reddit вопрос ок", redditPostPasses(rp, now));
+check("reddit старый", !redditPostPasses({ ...rp, created_utc: now / 1000 - 3 * 86400 }, now));
+check("reddit много ответов", !redditPostPasses({ ...rp, num_comments: 40 }, now));
+check("reddit не вопрос", !redditPostPasses({ ...rp, title: "My new portfolio site", selftext: "Built with love and coffee, check it out friends" }, now));
+
+// Планировщик
+const tn = tashkentNow(new Date("2026-09-29T08:10:00Z")); // Вт 13:10 в Ташкенте
+check("ташкент время", tn.time === "13:10" && tn.dow === 2 && tn.date === "2026-09-29");
+const tg = TASKS.find((t) => t.key === "tg_post");
+check("tg_post срабатывает во вторник 13:10", shouldFire(tg, tn, {}, new Date("2026-09-29T08:10:00Z")));
+check("tg_post не дважды", !shouldFire(tg, tn, { "tg_post:2026-09-29": 1 }, new Date("2026-09-29T08:10:00Z")));
+const mon = tashkentNow(new Date("2026-09-28T08:10:00Z"));
+check("tg_post не в понедельник", !shouldFire(tg, mon, {}, new Date("2026-09-28T08:10:00Z")));
+const late = tashkentNow(new Date("2026-09-29T17:30:00Z")); // 22:30
+check("окно 3 ч прошло", !shouldFire(tg, late, {}, new Date("2026-09-29T17:30:00Z")));
+const show = TASKS.find((t) => t.key === "showoff");
+check("showoff только первая суббота", taskDueToday(show, tashkentNow(new Date("2026-10-03T08:00:00Z"))) && !taskDueToday(show, tashkentNow(new Date("2026-10-10T08:00:00Z"))));
+
+// Стратегии
+check("contra по ключевому слову", strategiesFor("сколько постов на контре?").includes("contra"));
+check("overview всегда", strategiesFor("привет").includes("overview"));
+check("файл стратегии читается", readStrategy("linkedin").includes("кринж") || readStrategy("linkedin").includes("Кринж"));
+addStrategyNote("contra", "теперь 4 поста в неделю");
+check("правка видна", readStrategy("contra").includes("теперь 4 поста в неделю"));
+check("правка удаляется", removeStrategyNote("contra", 0) && !readStrategy("contra").includes("теперь 4 поста"));
+check("блок стратегий не пустой", strategiesBlock(["overview", "schedule"]).length > 500);
+
+// Модели
+check("модель по умолчанию filter=haiku", getModel("filter") === "haiku");
+setModel("raphael", "opus");
+check("override raphael", getModel("raphael") === "opus");
+check("кривая модель не ставится", setModel("raphael", "gpt") === false);
+resetModels();
+check("reset", getModel("raphael") !== "opus" || process.env.CLAUDE_MODEL_SMART === "opus");
+
+// Стрим Рафаэля: служебные строки скрыты
+check("стрим скрывает [[CHAT", visibleRaphaelText("[[CHAT: Бахтиёр]]") === null);
+check("стрим чистит хвост", visibleRaphaelText("Ок, сейчас\n[[STRATEGY_NOTE: contra | 4 поста]]") === "Ок, сейчас");
+check("стрим недописанный маркер", visibleRaphaelText("Текст [[CHA") === "Текст");
+
+if (process.argv.includes("--live")) {
+  const { askRaphael } = await import("../src/claudeClient.js");
+  setModel("raphael", "haiku");
+  let deltas = 0;
+  const started = Date.now();
+  let firstAt = null;
+  const res = await askRaphael({
+    prompt: "Напиши 3 коротких предложения о том, зачем фронтендеру Contra.",
+    systemText: "Отвечай по-русски, коротко.",
+    onDelta: () => {
+      deltas += 1;
+      firstAt ||= Date.now();
+    },
+  });
+  console.log(`\n[live] первый кусок через ${((firstAt - started) / 1000).toFixed(1)} с, всего ${((Date.now() - started) / 1000).toFixed(1)} с, кусков ${deltas}\n${res.text}\n`);
+  check("live: стрим пришёл кусками", deltas >= 1 && res.text.length > 20);
+}
+
+fs.rmSync(tmpState, { force: true });
+console.log(failed ? `\n${failed} FAIL` : "\nВсё ок");
+process.exit(failed ? 1 : 0);

@@ -357,3 +357,61 @@ export function findChats(query) {
   if (exact.length) return exact.map(([key]) => key);
   return entries.filter(([, data]) => (data.title || "").toLowerCase().includes(q)).map(([key]) => key);
 }
+
+// --- Агент: модели, стратегии, комментарии, планировщик ---
+// Всё новое лежит в state.agent, чтобы не путаться со старыми полями.
+function agent() {
+  state.agent = state.agent || {};
+  return state.agent;
+}
+
+export function getAgentValue(key, fallback = null) {
+  const v = agent()[key];
+  return v === undefined ? fallback : v;
+}
+
+export function setAgentValue(key, value) {
+  agent()[key] = value;
+  saveState(state);
+}
+
+// Изменение объекта/массива на месте + сохранение.
+export function updateAgentValue(key, fallback, fn) {
+  const a = agent();
+  if (a[key] === undefined) a[key] = fallback;
+  const res = fn(a[key]);
+  saveState(state);
+  return res;
+}
+
+// Счётчики «за сегодня» (по дате Ташкента): комментарии, вступления, черновики.
+function tashkentDay() {
+  return new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Tashkent" });
+}
+
+export function getDailyCount(name) {
+  const c = agent().daily?.[name];
+  return c && c.day === tashkentDay() ? c.count : 0;
+}
+
+export function incDailyCount(name) {
+  const a = agent();
+  a.daily = a.daily || {};
+  const day = tashkentDay();
+  const c = a.daily[name];
+  a.daily[name] = c && c.day === day ? { day, count: c.count + 1 } : { day, count: 1 };
+  saveState(state);
+  return a.daily[name].count;
+}
+
+export function updateDraft(id, patch) {
+  if (!state.drafts?.[id]) return;
+  Object.assign(state.drafts[id], patch);
+  saveState(state);
+}
+
+export function listDrafts(kind) {
+  return Object.entries(state.drafts || {})
+    .filter(([, d]) => d.kind === kind)
+    .map(([id, d]) => ({ id, ...d }));
+}

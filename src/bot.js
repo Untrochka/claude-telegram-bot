@@ -56,9 +56,28 @@ import {
   listMemory,
   removeMemory,
   importChatHistory,
+  getAgentValue,
+  setAgentValue,
 } from "./state.js";
 import { generateReply } from "./claudeClient.js";
-import { raphaelTurn, resetRaphael, contentTurn, memoryText } from "./raphael.js";
+import { raphaelTurn, resetRaphael, contentTurn, memoryText, visibleRaphaelText } from "./raphael.js";
+import { createStreamer } from "./stream.js";
+import { modelsText, setModel, resetModels, ROLES, MODEL_CHOICES } from "./models.js";
+import { STRATEGIES, readStrategy, strategiesListText, addStrategyNote, removeStrategyNote } from "./strategies.js";
+import { startMtproto, isMtprotoReady } from "./mtproto.js";
+import {
+  runDiscovery,
+  pollWatchlist,
+  processCommentQueue,
+  handleCommentCallback,
+  applyCommentRewrite,
+  watchListText,
+  addWatchManual,
+  removeWatch,
+  commentsStatusText,
+} from "./comments.js";
+import { runRedditDigest, handleRedditCallback, applyRedditRewrite } from "./reddit.js";
+import { plannerTick, handlePlanCallback, morningBriefText } from "./planner.js";
 import { parseTelegramExport } from "./importer.js";
 import { getTemplate } from "./templates.js";
 import { checkPrices } from "./prices.js";
@@ -383,13 +402,64 @@ async function replyToBatch(chatId, batch) {
   await sendDraftCard(connectionId, chatId, intent, customerText, outgoingText, priceWarning);
 }
 
+// Кнопки агента: c — комментарии, r — Reddit, p — напоминания, sn — правка стратегии.
+async function handleAgentCallback(query, prefix, action, id) {
+  let answer = null;
+  try {
+    if (prefix === "c") answer = await handleCommentCallback(query, action, id);
+    else if (prefix === "r") answer = await handleRedditCallback(query, action, id);
+    else if (prefix === "p") {
+      const res = await handlePlanCallback(query, action, id);
+      if (res?.startDay) {
+        await answerCallbackQuery(query.id, "Начинаем /day");
+        enqueuePersonal({ chat: { id: query.message.chat.id, type: "private" }, from: { id: config.ownerTelegramId }, text: "/day" });
+        return;
+      }
+      answer = res;
+    } else if (prefix === "sn") answer = await handleStrategyNoteCallback(query, action, id);
+  } catch (err) {
+    console.error(`[bot] Ошибка кнопки ${prefix}:${action}:`, err.message);
+    answer = "Ошибка, см. логи";
+  }
+  await answerCallbackQuery(query.id, typeof answer === "string" ? answer.slice(0, 190) : undefined).catch(() => {});
+}
+
+async function sendStrategyNoteCard(chatId, note) {
+  const id = createDraft({ kind: "strategy_note", name: note.name, text: note.text });
+  await sendMessageWithButtons(chatId, `📌 Правка стратегии «${STRATEGIES[note.name]}»:
+${note.text}`, [
+    [
+      { text: "✅ Сохранить", callback_data: `sn:y:${id}` },
+      { text: "🗑 Не надо", callback_data: `sn:n:${id}` },
+    ],
+  ]);
+}
+
+async function handleStrategyNoteCallback(query, action, id) {
+  const d = getDraft(id);
+  if (!d) return "Уже не актуально.";
+  deleteDraft(id);
+  const text = query.message.text || "";
+  if (action === "y") {
+    addStrategyNote(d.name, d.text);
+    await editMessageText(query.message.chat.id, query.message.message_id, `${text}\n\n✅ Сохранено. Посмотреть: /strategy ${d.name}`);
+    return "Сохранил";
+  }
+  await editMessageText(query.message.chat.id, query.message.message_id, `${text}\n\n🗑 Не сохранял.`);
+  return "Ок";
+}
+
 async function handleCallbackQuery(query) {
   if (query.from?.id !== config.ownerTelegramId) {
     await answerCallbackQuery(query.id, "Не твоё.");
     return;
   }
 
-  const [, action, draftId] = (query.data || "").split(":");
+  const [prefix, action, draftId] = (query.data || "").split(":");
+  if (prefix !== "d") {
+    await handleAgentCallback(query, prefix, action, draftId);
+    return;
+  }
   const draft = getDraft(draftId);
   if (!draft) {
     await answerCallbackQuery(query.id, "Черновик уже не актуален.");
@@ -575,6 +645,11 @@ async function runContentTurn(chatId, incomingText, images = []) {
   const key = `${CONTENT_CHAT_PREFIX}${chatId}`;
   setContentMode(chatId, true); // продлеваем /day — выключится сам после паузы
   const stopTyping = keepTyping(chatId);
+  // Стримим только обычные реплики интервью; готовые посты (READY_TO_POST)
+  // придут карточками, их по кускам не показываем.
+  const streamer = createStreamer(chatId, {
+    transform: (t) => ("READY_TO_POST".startsWith(t.trim().slice(0, 13)) || t.trim().startsWith("READY_TO_POST") ? null : t),
+  });
 
   try {
     const { raw, ready, message, untra, vlog, notes } = await contentTurn({
@@ -582,17 +657,20 @@ async function runContentTurn(chatId, incomingText, images = []) {
       text: incomingText,
       images,
       recentPostsText: formatRecentPosts(),
+      onDelta: (t) => streamer.update(t),
     });
     stopTyping();
     if (!raw) {
+      await streamer.discard();
       console.warn("[bot] Пустой ответ от контент-агента.");
       return;
     }
 
     if (!ready) {
-      await sendFormatted(chatId, message || raw);
+      await streamer.finish(message || raw);
       return;
     }
+    await streamer.discard();
 
     if (!untra.length && !vlog) {
       // Маркер есть, но секции не распознались — не теряем текст молча.
@@ -617,6 +695,7 @@ async function runContentTurn(chatId, incomingText, images = []) {
     }
   } catch (err) {
     stopTyping();
+    await streamer.discard();
     console.error("[bot] Ошибка контент-агента:", err.message);
     await sendMessage(chatId, "Не смог обработать — ошибка на моей стороне, см. логи.");
   }
@@ -754,19 +833,164 @@ async function secretaryTurn(chatId, text, images = []) {
   const fallbackHistory = getHistory(chatKey);
   pushHistory(chatKey, "azizhon", text);
   const stopTyping = keepTyping(chatId);
+  const streamer = createStreamer(chatId, { transform: visibleRaphaelText });
   try {
-    const reply = await raphaelTurn({ chatKey, text, images, fallbackHistory });
+    const { text: reply, notes } = await raphaelTurn({
+      chatKey,
+      text,
+      images,
+      fallbackHistory,
+      onDelta: (t) => streamer.update(t),
+      onStatus: (s) => streamer.status(s),
+    });
     stopTyping();
     if (!reply) {
+      await streamer.discard();
       console.warn("[bot] Пустой ответ от Рафаэля, пропускаю отправку.");
       return;
     }
-    await sendFormatted(chatId, reply);
+    await streamer.finish(reply);
     pushHistory(chatKey, "assistant", reply);
+    for (const note of notes || []) await sendStrategyNoteCard(chatId, note);
   } catch (err) {
     stopTyping();
+    await streamer.discard();
     console.error(`[bot] Ошибка Рафаэля:`, err.message);
     await sendMessage(chatId, "Не смог ответить — ошибка на моей стороне, см. логи.");
+  }
+}
+
+// --- Агент: /model, /strategy, /watch, /comments, /reddit, /plan ---
+async function handleModelCommand(chatId, text) {
+  const args = text.split(/\s+/).slice(1).map((a) => a.toLowerCase());
+  if (!args.length) {
+    await sendMessage(chatId, modelsText());
+    return;
+  }
+  if (args[0] === "reset") {
+    resetModels();
+    await sendMessage(chatId, `Вернул модели по умолчанию.\n\n${modelsText()}`);
+    return;
+  }
+  const [role, model] = args;
+  if (role === "all" && MODEL_CHOICES.includes(model)) {
+    for (const r of Object.keys(ROLES)) if (r !== "filter") setModel(r, model);
+    await sendMessage(chatId, `Поставил ${model} везде, кроме фильтра.\n\n${modelsText()}`);
+    return;
+  }
+  if (!ROLES[role] || !MODEL_CHOICES.includes(model)) {
+    await sendMessage(chatId, `Не понял. Роли: ${Object.keys(ROLES).join(", ")} (или all). Модели: ${MODEL_CHOICES.join(", ")}.\nПример: /model raphael opus`);
+    return;
+  }
+  setModel(role, model);
+  await sendMessage(chatId, `Ок: ${role} → ${model}.`);
+}
+
+async function handleStrategyCommand(chatId, text) {
+  const rest = text.replace(/^\/strategy\s*/i, "").trim();
+  if (!rest) {
+    await sendMessage(chatId, strategiesListText());
+    return;
+  }
+  const m = rest.match(/^(\w+)\s*(?:([+-])\s*([\s\S]*))?$/);
+  const name = m?.[1]?.toLowerCase();
+  if (!name || !STRATEGIES[name]) {
+    await sendMessage(chatId, `Нет такой стратегии. ${strategiesListText()}`);
+    return;
+  }
+  if (m[2] === "+" && m[3]?.trim()) {
+    addStrategyNote(name, m[3]);
+    await sendMessage(chatId, `Добавил правку в «${STRATEGIES[name]}».`);
+    return;
+  }
+  if (m[2] === "-") {
+    const ok = removeStrategyNote(name, Number(m[3]) - 1);
+    await sendMessage(chatId, ok ? "Удалил правку." : "Нет правки с таким номером.");
+    return;
+  }
+  for (const chunk of splitForTelegram(readStrategy(name))) await sendMessage(chatId, chunk);
+}
+
+// Фоновые задачи агента не должны держать long polling.
+const agentJobs = new Set();
+function runAgentJob(name, fn) {
+  if (agentJobs.has(name)) return false;
+  agentJobs.add(name);
+  Promise.resolve()
+    .then(fn)
+    .catch((err) => console.error(`[agent] ${name} упал:`, err.message))
+    .finally(() => agentJobs.delete(name));
+  return true;
+}
+
+async function handleWatchCommand(chatId, text) {
+  const [, sub, arg] = text.trim().split(/\s+/);
+  if (!isMtprotoReady()) {
+    await sendMessage(chatId, watchListText());
+    return;
+  }
+  if (sub === "add" && arg) {
+    try {
+      await sendMessage(chatId, await addWatchManual(arg));
+    } catch (err) {
+      await sendMessage(chatId, `Не смог добавить: ${err.message}`);
+    }
+    return;
+  }
+  if ((sub === "remove" || sub === "rm") && arg) {
+    await sendMessage(chatId, removeWatch(arg));
+    return;
+  }
+  if (sub === "find") {
+    const started = runAgentJob("discovery", async () => {
+      const res = await runDiscovery({ force: true });
+      const added = res?.added?.length ? res.added.map((u) => `@${u}`).join(", ") : "никого";
+      await sendMessage(chatId, `🔎 Поиск каналов закончен. Добавил: ${added}.${res?.removed?.length ? ` Убрал: ${res.removed.map((u) => `@${u}`).join(", ")}.` : ""}${res?.note ? `\n${res.note}` : ""}\n\n${watchListText()}`);
+    });
+    await sendMessage(chatId, started ? "Ищу каналы, это займёт пару минут (паузы между запросами — чтобы Telegram не ругался)…" : "Поиск уже идёт.");
+    return;
+  }
+  for (const chunk of splitForTelegram(watchListText())) await sendMessage(chatId, chunk);
+}
+
+async function handleCommentsCommand(chatId, text) {
+  const arg = text.split(/\s+/)[1]?.toLowerCase();
+  if (arg === "on" || arg === "off") {
+    setAgentValue("commentsOn", arg === "on");
+    await sendMessage(chatId, arg === "on" ? "Агент комментариев включён." : "Агент комментариев выключен.");
+    return;
+  }
+  if (arg === "check") {
+    const started = runAgentJob("poll", async () => {
+      const res = await pollWatchlist({ force: true });
+      await sendMessage(chatId, res?.drafted ? `Готово: черновиков ${res.drafted}.` : `Новых подходящих постов нет.${res?.note ? ` (${res.note})` : ""}`);
+    });
+    await sendMessage(chatId, started ? "Проверяю каналы…" : "Проверка уже идёт.");
+    return;
+  }
+  await sendMessage(chatId, commentsStatusText());
+}
+
+async function handleRedditCommand(chatId) {
+  const started = runAgentJob("reddit", async () => {
+    const n = await runRedditDigest({ maxDrafts: 3 });
+    if (!n) await sendMessage(chatId, "Свежих подходящих вопросов на Reddit не нашёл.");
+  });
+  await sendMessage(chatId, started ? "Смотрю Reddit…" : "Уже смотрю.");
+}
+
+// Правка черновика комментария/ответа после кнопки ✏️. -> true если сообщение ушло туда.
+async function consumePendingRewrite(chatId, text) {
+  const pending = getAgentValue("pendingRewrite", null);
+  if (!pending || text.startsWith("/") || Date.now() - pending.ts > 15 * 60_000) return false;
+  setAgentValue("pendingRewrite", null);
+  const stopTyping = keepTyping(chatId);
+  try {
+    if (pending.kind === "comment") return await applyCommentRewrite(pending, text);
+    if (pending.kind === "reddit") return await applyRedditRewrite(pending, text);
+    return false;
+  } finally {
+    stopTyping();
   }
 }
 
@@ -813,6 +1037,7 @@ async function handlePersonalMessage(msg) {
   if (!text) return;
 
   console.log(`[bot] Сообщение от Азизхона: ${text.slice(0, 80)}`);
+  if (!images.length && (await consumePendingRewrite(chatId, text))) return;
   const command = text.startsWith("/") ? text.split(/\s+/)[0].toLowerCase().replace(/@\w+$/, "") : null;
 
   switch (command) {
@@ -853,6 +1078,24 @@ async function handlePersonalMessage(msg) {
     case "/forget":
       await handleMemoryCommand(chatId, text);
       return;
+    case "/model":
+      await handleModelCommand(chatId, text);
+      return;
+    case "/strategy":
+      await handleStrategyCommand(chatId, text);
+      return;
+    case "/watch":
+      await handleWatchCommand(chatId, text);
+      return;
+    case "/comments":
+      await handleCommentsCommand(chatId, text);
+      return;
+    case "/reddit":
+      await handleRedditCommand(chatId);
+      return;
+    case "/plan":
+      await sendMessage(chatId, morningBriefText());
+      return;
     default:
       break;
   }
@@ -878,6 +1121,22 @@ function enqueuePersonal(msg) {
       if (personalQueues.get(key) === next) personalQueues.delete(key);
     });
   personalQueues.set(key, next);
+}
+
+// Агент: напоминания, поиск каналов, мониторинг постов, очередь отправки
+// комментариев. Всё в фоне — long polling клиентов не ждёт модель.
+function agentTick() {
+  try {
+    plannerTick();
+    runAgentJob("commentQueue", processCommentQueue);
+    if (isMtprotoReady()) {
+      runAgentJob("discovery", () => runDiscovery());
+      // Не читаем каналы параллельно с поиском — меньше шансов на FLOOD_WAIT.
+      if (!agentJobs.has("discovery")) runAgentJob("poll", () => pollWatchlist());
+    }
+  } catch (err) {
+    console.error("[agent] tick:", err.message);
+  }
 }
 
 async function pollLoop() {
@@ -926,6 +1185,9 @@ async function registerCommands() {
 }
 
 registerCommands();
+startMtproto().catch((err) => console.error("[mtproto] Старт:", err.message));
+// Тик агента независимо от long polling (getUpdates ждёт до 30 с).
+setInterval(agentTick, 20_000);
 
 pollLoop().catch((err) => {
   console.error("[bot] Критическая ошибка, бот остановлен:", err);

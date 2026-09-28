@@ -415,3 +415,18 @@ export function listDrafts(kind) {
     .filter(([, d]) => d.kind === kind)
     .map(([id, d]) => ({ id, ...d }));
 }
+
+// Карточка черновика по id сообщения в чате владельца (ответ reply на карточку).
+export function findDraftByCardMessage(messageId) {
+  const hit = Object.entries(state.drafts || {}).find(([, d]) => d.cardMessageId === messageId);
+  return hit ? hit[0] : null;
+}
+
+// Последние черновики на утверждении — чтобы Рафаэль понимал «измени ответ клиенту».
+export function listRecentDrafts(limit = 6) {
+  return Object.entries(state.drafts || {})
+    .filter(([, d]) => ["business", "channel_post", "comment", "reddit"].includes(d.kind) && d.text && !d.queued)
+    .map(([id, d]) => ({ id, ...d }))
+    .sort((a, b) => Number(b.id) - Number(a.id))
+    .slice(0, limit);
+}

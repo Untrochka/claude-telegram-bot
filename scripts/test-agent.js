@@ -94,6 +94,8 @@ check("reset", getModel("raphael") !== "opus" || process.env.CLAUDE_MODEL_SMART 
 check("стрим скрывает [[CHAT", visibleRaphaelText("[[CHAT: Бахтиёр]]") === null);
 check("стрим чистит хвост", visibleRaphaelText("Ок, сейчас\n[[STRATEGY_NOTE: contra | 4 поста]]") === "Ок, сейчас");
 check("стрим недописанный маркер", visibleRaphaelText("Текст [[CHA") === "Текст");
+check("стрим маркер с одной ]", visibleRaphaelText("Принято.\n\n[[STRATEGY_NOTE: clients | без «с радостью»]") === "Принято.");
+check("стрим прячет REWRITE", visibleRaphaelText("Сейчас переделаю\n[[REWRITE: 41 | короче]]") === "Сейчас переделаю");
 
 if (process.argv.includes("--live")) {
   const { askRaphael } = await import("../src/claudeClient.js");

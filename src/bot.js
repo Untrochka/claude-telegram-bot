@@ -58,6 +58,8 @@ import {
   importChatHistory,
   getAgentValue,
   setAgentValue,
+  updateDraft,
+  findDraftByCardMessage,
 } from "./state.js";
 import { generateReply } from "./claudeClient.js";
 import { raphaelTurn, resetRaphael, contentTurn, memoryText, visibleRaphaelText } from "./raphael.js";
@@ -79,6 +81,7 @@ import {
 } from "./comments.js";
 import { runRedditDigest, handleRedditCallback, applyRedditRewrite } from "./reddit.js";
 import { plannerTick, handlePlanCallback, morningBriefText } from "./planner.js";
+import { applyDraftRewrite, clientRulesText, clientCardText, clientButtons, postButtons } from "./rewrite.js";
 import { parseTelegramExport } from "./importer.js";
 import { getTemplate } from "./templates.js";
 import { checkPrices } from "./prices.js";
@@ -151,14 +154,11 @@ function chatTitleFrom(chat) {
 }
 
 async function sendDraftCard(connectionId, chatId, intent, customerText, replyText, extraLine = "") {
-  const draftId = createDraft({ kind: "business", connectionId, chatId, text: replyText });
-  const preview = `${urgencyLabelFor(intent)}\n${extraLine}💬 ${chatLabel(chatId)}:\n${customerText}\n\n✏️ Черновик ответа (${intent}):\n${replyText}`;
-  await sendMessageWithButtons(config.ownerTelegramId, preview, [
-    [
-      { text: "✅ Отправить", callback_data: `d:s:${draftId}` },
-      { text: "🗑 Не отправлять", callback_data: `d:x:${draftId}` },
-    ],
-  ]);
+  const card = { kind: "business", connectionId, chatId, text: replyText, intent, customerText, extraLine: `${urgencyLabelFor(intent)}\n${extraLine}` };
+  const draftId = createDraft(card);
+  // ✏️ или ответ (reply) на карточку — переписать; правка запоминается для следующих ответов.
+  const msg = await sendMessageWithButtons(config.ownerTelegramId, clientCardText(card), clientButtons(draftId));
+  updateDraft(draftId, { cardMessageId: msg?.message_id });
   console.log(`[bot] Черновик #${draftId} (${intent}) на утверждение (чат ${chatId}).`);
 }
 
@@ -353,6 +353,7 @@ async function replyToBatch(chatId, batch) {
   const { intent, product, chat, text: modelReply } = await generateReply(prior, customerText, images, {
     chatName: getChatMeta(chatId).title,
     styleSamples: getStyleSamples(),
+    rules: clientRulesText(),
   });
   if (chat !== "unknown") setChatMeta(chatId, { kind: chat });
   console.log(`[bot] Чат ${chatId}: intent=${intent} product=${product} chat=${chat}`);
@@ -472,6 +473,13 @@ async function handleCallbackQuery(query) {
   const cardText = query.message.text || "";
 
   const isPost = draft.kind === "channel_post";
+
+  if (action === "re") {
+    setAgentValue("pendingRewrite", { kind: "draft", draftId, ts: Date.now() });
+    await sendMessage(cardChatId, "Напиши, что поменять (например «проще и без ИИ-шных фраз»). Или «текст: …» — поставлю твой вариант. Можно и просто ответить (reply) на карточку.");
+    await answerCallbackQuery(query.id, "Жду правку");
+    return;
+  }
 
   if (action === "s") {
     try {
@@ -633,15 +641,6 @@ function handleChannelPost(post) {
   console.log("[bot] Записал ручной пост Untra.dev для баланса рубрик.");
 }
 
-function postButtons(draftId) {
-  return [
-    [
-      { text: "✅ Запостить", callback_data: `d:s:${draftId}` },
-      { text: "🗑 Не постить", callback_data: `d:x:${draftId}` },
-    ],
-  ];
-}
-
 async function runContentTurn(chatId, incomingText, images = []) {
   const key = `${CONTENT_CHAT_PREFIX}${chatId}`;
   setContentMode(chatId, true); // продлеваем /day — выключится сам после паузы
@@ -682,11 +681,13 @@ async function runContentTurn(chatId, incomingText, images = []) {
     // Посты — простым текстом: так же они уйдут в канал.
     for (const post of untra) {
       const draftId = createDraft({ kind: "channel_post", channelId: config.untraChannelId, channelLabel: "Untra.dev", text: post });
-      await sendMessageWithButtons(chatId, `📝 Untra.dev:\n\n${post}`, postButtons(draftId));
+      const m = await sendMessageWithButtons(chatId, `📝 Untra.dev:\n\n${post}`, postButtons(draftId));
+      updateDraft(draftId, { cardMessageId: m?.message_id });
     }
     if (vlog) {
       const draftId = createDraft({ kind: "channel_post", channelId: config.vlogChannelId, channelLabel: "Untra dev — vlog", text: vlog });
-      await sendMessageWithButtons(chatId, `📝 Untra dev — vlog:\n\n${vlog}`, postButtons(draftId));
+      const m = await sendMessageWithButtons(chatId, `📝 Untra dev — vlog:\n\n${vlog}`, postButtons(draftId));
+      updateDraft(draftId, { cardMessageId: m?.message_id });
     }
 
     // Подсказка к посту (угол, визуал, запасной хук) — после самих постов,
@@ -836,7 +837,7 @@ async function secretaryTurn(chatId, text, images = []) {
   const stopTyping = keepTyping(chatId);
   const streamer = createStreamer(chatId, { transform: visibleRaphaelText });
   try {
-    const { text: reply, notes } = await raphaelTurn({
+    const { text: reply, notes, rewrites } = await raphaelTurn({
       chatKey,
       text,
       images,
@@ -845,14 +846,18 @@ async function secretaryTurn(chatId, text, images = []) {
       onStatus: (s) => streamer.status(s),
     });
     stopTyping();
-    if (!reply) {
+    if (reply) {
+      await streamer.finish(reply);
+      pushHistory(chatKey, "assistant", reply);
+    } else {
       await streamer.discard();
-      console.warn("[bot] Пустой ответ от Рафаэля, пропускаю отправку.");
-      return;
+      if (!rewrites?.length && !notes?.length) console.warn("[bot] Пустой ответ от Рафаэля, пропускаю отправку.");
     }
-    await streamer.finish(reply);
-    pushHistory(chatKey, "assistant", reply);
     for (const note of notes || []) await sendStrategyNoteCard(chatId, note);
+    for (const rw of rewrites || []) {
+      const ok = await applyDraftRewrite(rw.draftId, rw.instruction);
+      if (!ok) await sendMessage(chatId, `Черновик #${rw.draftId} уже не актуален.`);
+    }
   } catch (err) {
     stopTyping();
     await streamer.discard();
@@ -988,6 +993,7 @@ async function consumePendingRewrite(chatId, text) {
   setAgentValue("pendingRewrite", null);
   const stopTyping = keepTyping(chatId);
   try {
+    if (pending.kind === "draft") return await applyDraftRewrite(pending.draftId, text);
     if (pending.kind === "comment") return await applyCommentRewrite(pending, text);
     if (pending.kind === "reddit") return await applyRedditRewrite(pending, text);
     return false;
@@ -1040,6 +1046,23 @@ async function handlePersonalMessage(msg) {
 
   console.log(`[bot] Сообщение от Азизхона: ${text.slice(0, 80)}`);
   if (!images.length && (await consumePendingRewrite(chatId, text))) return;
+
+  // Ответ (reply) на сообщение бота: на карточку черновика — это правка черновика;
+  // на любое другое — даём Рафаэлю контекст, на что именно ответил Мастер.
+  const replied = msg.reply_to_message;
+  if (replied && !text.startsWith("/")) {
+    const draftId = findDraftByCardMessage(replied.message_id);
+    if (draftId) {
+      const stopTyping = keepTyping(chatId);
+      try {
+        if (await applyDraftRewrite(draftId, text)) return;
+      } finally {
+        stopTyping();
+      }
+    }
+    const quoted = (replied.text || replied.caption || "").slice(0, 1500);
+    if (quoted) text = `[Мастер отвечает на это сообщение бота:\n«${quoted}»]\n\n${text}`;
+  }
   const command = text.startsWith("/") ? text.split(/\s+/)[0].toLowerCase().replace(/@\w+$/, "") : null;
 
   switch (command) {

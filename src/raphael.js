@@ -12,6 +12,8 @@ import { config } from "./config.js";
 import { askRaphael, continueContentSession } from "./claudeClient.js";
 import { strategiesFor, strategiesBlock, STRATEGIES } from "./strategies.js";
 import { isMtprotoReady, readChatByQuery, recentDialogsText } from "./mtproto.js";
+import { listRecentDrafts } from "./state.js";
+import { recentDraftsText } from "./rewrite.js";
 import {
   getHistory,
   getSession,
@@ -29,6 +31,7 @@ const MAX_TRANSCRIPT_CHARS = 30_000;
 const CHAT_INDEX_LIMIT = 15;
 const CHAT_REQUEST_RE = /\[\[CHAT:\s*([^\]]+?)\s*\]\]/gi;
 const hasChatRequest = (text) => /\[\[CHAT:/i.test(text);
+const REWRITE_RE = /\[\[REWRITE:\s*#?(\d+)\s*\|\s*([^\]]+?)\s*\]\]/gi;
 const NOTE_RE = /\[\[STRATEGY_NOTE:\s*([a-z]+)\s*\|\s*([^\]]+?)\s*\]\]/gi;
 
 function readFileSafe(file) {
@@ -87,8 +90,11 @@ export async function buildRaphaelSystem(userText = "") {
 Опирайся на них, когда советуешь про посты, комментарии, Contra, LinkedIn, Reddit, Instagram, студию. Есть и другие: ${Object.keys(STRATEGIES).join(", ")} — если нужна другая, скажи Мастеру, что можно спросить про неё прямо.
 
 ${strategiesBlock(strategyNames)}`,
-    `## Правки стратегий
-Если Мастер просит что-то поменять в стратегии («теперь на Contra 4 поста в неделю», «в LinkedIn не пиши про X»), в конце ответа добавь отдельной строкой [[STRATEGY_NOTE: имя | правка одной фразой]], где имя — одно из: ${Object.keys(STRATEGIES).join(", ")}. Бот покажет Мастеру кнопку подтверждения. Не добавляй это без явной просьбы.`,
+    `## Правила и стратегии меняются словами Мастера (без правки кода)
+Если Мастер хочет, чтобы бот впредь делал что-то иначе — в стратегии («теперь на Contra 4 поста в неделю»), в ответах клиентам («пиши клиентам проще, без "с радостью"», «не предлагай созвон сразу»), в комментариях, в постах или в твоём собственном тоне («отвечай короче», «не называй меня Мастер») — в конце ответа добавь отдельной строкой [[STRATEGY_NOTE: имя | правило одной фразой]]. Имена: ${Object.keys(STRATEGIES).join(", ")} (clients — ответы клиентам, raphael — как ты общаешься, comments — комментарии, telegram — посты канала). Бот покажет кнопку «Сохранить». Добавляй, когда Мастер просит поменять поведение насовсем или ругается на то, как бот что-то делает; разовую просьбу «перепиши этот ответ» правилом не делай.`,
+    `## Черновики на утверждении (карточки в чате)
+${recentDraftsText(listRecentDrafts(6))}
+Если Мастер просит переделать черновик («измени ответ клиенту», «слишком иишно», «пост слишком длинный») — выбери нужный черновик (обычно последний подходящий) и добавь отдельной строкой [[REWRITE: номер | что поменять, своими словами Мастера]]. Бот сам перепишет и пришлёт новую карточку с кнопками — сам текст ответа клиенту не пиши. Если непонятно, какой черновик, — спроси коротко.`,
     mt
       ? `## Чаты Мастера (MTProto: доступны ВСЕ его чаты, группы и каналы)\nСвежие диалоги:\n${dialogs || "(не удалось получить)"}\n\nЕщё недавние клиентские чаты из автоответчика:\n${chatIndexText()}`
       : `## Чаты, которые видел бот (новые сверху)\n${chatIndexText()}`,
@@ -147,7 +153,11 @@ async function resolveRequests(reply) {
 // Служебные строки в стриме не показываем.
 export function visibleRaphaelText(text) {
   if (/^\s*\[\[CHAT:/i.test(text)) return null;
-  return text.replace(CHAT_REQUEST_RE, "").replace(NOTE_RE, "").replace(/\[\[[A-Z_]*:?[^\]]*$/, "").trim();
+  let out = text.replace(CHAT_REQUEST_RE, "").replace(NOTE_RE, "").replace(REWRITE_RE, "");
+  // Недописанный служебный маркер в конце (ещё нет закрывающих ]]) — прячем.
+  const open = out.lastIndexOf("[[");
+  if (open !== -1 && !out.slice(open).includes("]]")) out = out.slice(0, open);
+  return out.trim();
 }
 
 // Один ход разговора с Рафаэлем. chatKey — ключ сессии (secretary:<chatId>).
@@ -185,8 +195,9 @@ export async function raphaelTurn({ chatKey, text, images = [], fallbackHistory 
   const notes = [...reply.matchAll(NOTE_RE)]
     .map((m) => ({ name: m[1].toLowerCase(), text: m[2].trim() }))
     .filter((n) => STRATEGIES[n.name]);
+  const rewrites = [...reply.matchAll(REWRITE_RE)].map((m) => ({ draftId: m[1], instruction: m[2].trim() }));
   // Если модель всё ещё просит чаты после лимита — не показываем служебные строки.
-  return { text: reply.replace(CHAT_REQUEST_RE, "").replace(NOTE_RE, "").trim(), notes };
+  return { text: reply.replace(CHAT_REQUEST_RE, "").replace(NOTE_RE, "").replace(REWRITE_RE, "").trim(), notes, rewrites };
 }
 
 export function resetRaphael(chatKey) {

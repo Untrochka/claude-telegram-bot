@@ -15,6 +15,8 @@ export const STRATEGIES = {
   instagram: "Instagram",
   comments: "Комментарии",
   schedule: "Расписание",
+  clients: "Ответы клиентам (автоответчик)",
+  raphael: "Как общается Рафаэль",
 };
 
 const KEYWORDS = {
@@ -25,6 +27,7 @@ const KEYWORDS = {
   instagram: /инст|instagram|reels|рилс|сторис|stories/i,
   comments: /коммент|comment/i,
   schedule: /распис|план|сегодня|недел|напомин|когда/i,
+  clients: /клиент|автоответ|черновик|ответ[аеу]? /i,
 };
 
 function readFile(name) {
@@ -48,9 +51,9 @@ export function readStrategy(name) {
   return `${base}\n\n## Правки Азиза (важнее текста выше)\n${list}`;
 }
 
-// Какие стратегии нужны для этого запроса. overview — всегда.
+// Какие стратегии нужны для этого запроса. overview и правила Рафаэля — всегда.
 export function strategiesFor(text, extra = []) {
-  const names = new Set(["overview", ...extra]);
+  const names = new Set(["overview", "raphael", ...extra]);
   for (const [name, re] of Object.entries(KEYWORDS)) if (re.test(text || "")) names.add(name);
   return [...names];
 }
@@ -93,4 +96,10 @@ export function strategiesListText() {
     "Добавить правку: /strategy <имя> + <текст>  (или просто скажи Рафаэлю)",
     "Удалить правку: /strategy <имя> - <номер>",
   ].join("\n");
+}
+
+// Только правки владельца (без текста файла) — для промпта автоответчика.
+export function notesText(name) {
+  const notes = strategyNotes(name);
+  return notes.map((n) => `- ${n.text}`).join("\n");
 }

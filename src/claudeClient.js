@@ -28,6 +28,10 @@ function buildPrompt(history, incomingText, ctx = {}) {
     for (const sample of ctx.styleSamples) lines.push(`— ${sample}`);
   }
 
+  if (ctx.rules) {
+    lines.push("", "[Правила и правки Азизхона к ответам клиентам — соблюдай их, они важнее общих правил:]", ctx.rules);
+  }
+
   lines.push("", "[Переписка до этого, старые сверху:]");
   if (history.length) {
     for (const m of history) lines.push(`${m.role === "customer" ? "Собеседник" : "Азизхон"}: ${m.text}`);

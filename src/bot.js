@@ -75,6 +75,7 @@ import {
   addWatchManual,
   removeWatch,
   commentsStatusText,
+  resetAutoWatch,
 } from "./comments.js";
 import { runRedditDigest, handleRedditCallback, applyRedditRewrite } from "./reddit.js";
 import { plannerTick, handlePlanCallback, morningBriefText } from "./planner.js";
@@ -941,13 +942,14 @@ async function handleWatchCommand(chatId, text) {
     await sendMessage(chatId, removeWatch(arg));
     return;
   }
-  if (sub === "find") {
+  if (sub === "find" || sub === "reset") {
+    const cleared = sub === "reset" ? resetAutoWatch() : 0;
     const started = runAgentJob("discovery", async () => {
       const res = await runDiscovery({ force: true });
       const added = res?.added?.length ? res.added.map((u) => `@${u}`).join(", ") : "никого";
       await sendMessage(chatId, `🔎 Поиск каналов закончен. Добавил: ${added}.${res?.removed?.length ? ` Убрал: ${res.removed.map((u) => `@${u}`).join(", ")}.` : ""}${res?.note ? `\n${res.note}` : ""}\n\n${watchListText()}`);
     });
-    await sendMessage(chatId, started ? "Ищу каналы, это займёт пару минут (паузы между запросами — чтобы Telegram не ругался)…" : "Поиск уже идёт.");
+    await sendMessage(chatId, started ? `${cleared ? `Убрал ${cleared} найденных раньше каналов. ` : ""}Ищу каналы (СНГ на русском и англоязычные), это займёт пару минут — паузы между запросами, чтобы Telegram не ругался…` : "Поиск уже идёт.");
     return;
   }
   for (const chunk of splitForTelegram(watchListText())) await sendMessage(chatId, chunk);

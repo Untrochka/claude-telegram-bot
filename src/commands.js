@@ -148,8 +148,8 @@ export const HELP_GROUPS = [
       },
       {
         kind: "command",
-        usage: "/watch, /watch find, /watch add @канал, /watch remove @канал",
-        text: "список каналов, поиск новых сейчас, добавить/убрать вручную (обычно не нужно — я сам).",
+        usage: "/watch, /watch find, /watch reset, /watch add @канал, /watch remove @канал",
+        text: "список каналов, поиск новых сейчас, reset — убрать найденные автоматически и искать заново, добавить/убрать вручную. Ищу русскоязычные каналы СНГ и англоязычные.",
         example: "/watch find",
       },
       {

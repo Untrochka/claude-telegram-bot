@@ -43,33 +43,39 @@ const MAX_FILTER_PER_POLL = 6;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Поисковые запросы для поиска каналов. group влияет на отчёт и баланс списка.
+// Русскоязычные каналы СНГ и англоязычные (зарубежные). Узбекские — не ищем
+// (решение Азиза): см. UZ_RE ниже.
 export const DISCOVERY_QUERIES = {
   business: [
-    "маркетинг Узбекистан",
-    "SMM Ташкент",
-    "бизнес Ташкент",
-    "предприниматели Узбекистан",
+    "стартапы",
+    "продуктовый менеджмент",
+    "маркетинг для бизнеса",
+    "предприниматели",
     "продажи в Telegram",
-    "маркетплейс Узбекистан",
-    "Uzum продавцы",
-    "интернет магазин Узбекистан",
-    "таргет Ташкент",
-    "biznes Toshkent",
-    "marketing uzbekistan",
-    "tadbirkorlar",
+    "e-commerce",
+    "маркетплейсы Wildberries Ozon",
+    "SMM продвижение",
+    "no-code автоматизация",
+    "startup founders",
+    "indie hackers",
+    "SaaS",
   ],
   dev: [
     "frontend",
-    "React разработка",
+    "React",
     "Next.js",
-    "javascript",
+    "JavaScript",
+    "TypeScript",
     "веб разработка",
-    "Telegram Mini App",
+    "Telegram Mini Apps",
     "фриланс разработчик",
-    "IT Ташкент",
-    "dasturlash",
+    "web development",
+    "UI UX design",
   ],
 };
+
+// Узбекские каналы пропускаем: узбекские буквы/слова в названии или username.
+export const UZ_RE = /[ўқғҳЎҚҒҲ]|o['‘’ʻ]|g['‘’ʻ]|uzb|uzum|toshkent|tashkent|ташкент|узбек|dasturlash|sotuv|tadbirkor|biznes\b|hayoti|haqida|uchun|kanal\b|yangilik/i;
 
 // Только явные метки рекламы/розыгрышей. Слово «реклама» само по себе не
 // режем — в каналах про маркетинг это обычная тема.
@@ -97,7 +103,7 @@ export function scoreChannel({ perWeek, avgReplies, participants }) {
 }
 
 export function channelQualifies({ linkedChatId, perWeek, avgReplies, participants }) {
-  return Boolean(linkedChatId) && perWeek >= 3 && avgReplies >= 1 && participants >= 800 && participants <= 80_000;
+  return Boolean(linkedChatId) && perWeek >= 3 && avgReplies >= 1 && participants >= 800 && participants <= 150_000;
 }
 
 // Ответ фильтра: "yes: причина" / "no: причина".
@@ -140,7 +146,7 @@ export function watchListText() {
   const lines = entries
     .sort((a, b) => (b[1].score || 0) - (a[1].score || 0))
     .map(([u, c]) => `• @${u} — ${c.title || ""} (${c.group === "dev" ? "разработка" : "бизнес"}, ${c.participants || "?"} подп., ~${(c.avgReplies || 0).toFixed(1)} комм./пост)${c.source === "manual" ? " ✋" : ""}`);
-  return `Слежу за ${entries.length} каналами:\n${lines.join("\n")}\n\n/watch add @канал · /watch remove @канал · /watch find — поискать новые сейчас`;
+  return `Слежу за ${entries.length} каналами:\n${lines.join("\n")}\n\n/watch add @канал · /watch remove @канал · /watch find — поискать новые · /watch reset — убрать найденные автоматически и искать заново`;
 }
 
 export async function addWatchManual(username) {
@@ -182,6 +188,20 @@ export function removeWatch(username) {
   return had ? `Убрал @${u} и больше не буду его добавлять.` : `@${u} не было в списке, но теперь не добавлю его сам.`;
 }
 
+// Убрать все авто-каналы (ручные ✋ остаются) — перед новым поиском.
+export function resetAutoWatch() {
+  return updateAgentValue("watch", {}, (w) => {
+    let n = 0;
+    for (const [u, c] of Object.entries(w)) {
+      if (c.source === "auto") {
+        delete w[u];
+        n += 1;
+      }
+    }
+    return n;
+  });
+}
+
 // --- Поиск каналов ---
 function logDiscovery(kind, username, why) {
   updateAgentValue("discoveryLog", [], (log) => {
@@ -201,11 +221,15 @@ export async function runDiscovery({ force = false } = {}) {
   const own = ownChannelUsername();
   const removed = [];
 
-  // Чистим мёртвые авто-каналы: нет постов 14 дней.
+  // Чистим авто-каналы: нет постов 14 дней или узбекский канал.
   for (const [u, c] of Object.entries(watch)) {
-    if (c.source === "auto" && c.lastPostAt && Date.now() - c.lastPostAt > 14 * DAY) {
+    if (c.source !== "auto") continue;
+    if (c.lastPostAt && Date.now() - c.lastPostAt > 14 * DAY) {
       removed.push(u);
       logDiscovery("removed", u, "нет постов 14 дней");
+    } else if (UZ_RE.test(`${c.title || ""} ${u}`)) {
+      removed.push(u);
+      logDiscovery("removed", u, "узбекский канал");
     }
   }
   if (removed.length) updateAgentValue("watch", {}, (w) => removed.forEach((u) => delete w[u]));
@@ -219,7 +243,8 @@ export async function runDiscovery({ force = false } = {}) {
           const u = ch.username;
           const key = u.toLowerCase();
           if (key === own || ex.has(u) || getWatch()[u] || candidates.has(u)) continue;
-          if (ch.participants && (ch.participants < 800 || ch.participants > 80_000)) continue;
+          if (ch.participants && (ch.participants < 800 || ch.participants > 150_000)) continue;
+          if (UZ_RE.test(`${ch.title} ${u}`)) continue;
           candidates.set(u, { ...ch, group });
         }
         await sleep(1500);

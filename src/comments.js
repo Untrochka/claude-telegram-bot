@@ -451,10 +451,37 @@ function commentButtons(id) {
   ];
 }
 
+// История комментариев (и черновики, и отправленные) — чтобы Рафаэль мог
+// обсуждать конкретный коммент даже после отправки.
+export function recordCommentHistory(draftId, patch) {
+  updateAgentValue("commentHistory", [], (list) => {
+    let item = list.find((x) => x.id === String(draftId));
+    if (!item) {
+      item = { id: String(draftId), ts: Date.now() };
+      list.push(item);
+    }
+    Object.assign(item, patch, { updatedAt: Date.now() });
+    if (list.length > 25) list.splice(0, list.length - 25);
+  });
+}
+
+export function getCommentHistory() {
+  return getAgentValue("commentHistory", []);
+}
+
 async function sendCommentCard(data) {
   const id = createDraft({ kind: "comment", ...data, createdAt: Date.now() });
   const msg = await sendMessageWithButtons(config.ownerTelegramId, commentCardText(data), commentButtons(id));
   updateDraft(id, { cardMessageId: msg?.message_id });
+  recordCommentHistory(id, {
+    username: data.username,
+    title: data.title,
+    postId: data.postId,
+    postText: data.postText.slice(0, 700),
+    text: data.text,
+    status: "черновик",
+    cardMessageId: msg?.message_id,
+  });
   return id;
 }
 
@@ -538,6 +565,7 @@ export async function handleCommentCallback(query, action, id) {
   if (!d) return "Черновик уже не актуален.";
 
   if (action === "x") {
+    recordCommentHistory(id, { status: "пропущен" });
     deleteDraft(id);
     await editMessageText(chatId, messageId, `${commentCardText(d)}\n\n🗑 Пропущено.`);
     return "Пропустил";
@@ -557,6 +585,7 @@ export async function handleCommentCallback(query, action, id) {
     }
     const delay = Math.round(30 + Math.random() * 90);
     updateDraft(id, { queued: true });
+    recordCommentHistory(id, { status: "в очереди на отправку" });
     sendQueue.push({ id, asChannel: action === "ch", sendAt: Date.now() + delay * 1000, chatId, messageId });
     await editMessageText(chatId, messageId, `${commentCardText(d)}\n\n⏳ Отправлю ${action === "ch" ? "от канала" : "от тебя"} примерно через ${delay} с.`);
     return "В очереди";
@@ -586,6 +615,7 @@ export async function processCommentQueue() {
         log.push({ ts: Date.now(), username: d.username, postId: d.postId, as: res.sentAs });
         if (log.length > 300) log.splice(0, log.length - 300);
       });
+      recordCommentHistory(item.id, { status: `отправлен ${res.sentAs === "channel" ? "от канала" : "от тебя"}`, link: res.link, text: d.text });
       deleteDraft(item.id);
       const who = res.sentAs === "channel" ? "от канала" : "от тебя";
       const warn = item.asChannel && res.sentAs !== "channel" ? " (от канала нельзя в этом чате — ушло от тебя)" : "";
@@ -619,6 +649,7 @@ export async function applyCommentRewrite(pending, text) {
     return true;
   }
   updateDraft(pending.draftId, { text: newText });
+  recordCommentHistory(pending.draftId, { text: newText, status: "черновик (переписан)" });
   if (d.cardMessageId) await editMessageText(config.ownerTelegramId, d.cardMessageId, `${commentCardText(d)}\n\n↪️ Новая версия ниже.`).catch(() => {});
   const msg = await sendMessageWithButtons(config.ownerTelegramId, commentCardText({ ...d, text: newText }), commentButtons(pending.draftId));
   updateDraft(pending.draftId, { cardMessageId: msg?.message_id });

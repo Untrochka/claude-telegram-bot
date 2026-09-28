@@ -18,7 +18,7 @@ import {
   listMemory,
 } from "./state.js";
 import { ROLES, getModel } from "./models.js";
-import { getWatch, commentsActive } from "./comments.js";
+import { getWatch, commentsActive, getCommentHistory } from "./comments.js";
 import { isMtprotoReady } from "./mtproto.js";
 import { TASKS, taskDueToday, tashkentNow } from "./planner.js";
 
@@ -111,4 +111,28 @@ export function memoryForAgents() {
     .slice(-20)
     .map((f) => `- ${f.text}`)
     .join("\n")}`;
+}
+
+// Последние комментарии (черновики и отправленные) с постом — для Рафаэля.
+export function commentsContextText(limit = 5) {
+  const list = getCommentHistory().slice(-limit);
+  if (!list.length) return "Комментариев пока не было.";
+  return list
+    .map((c) => {
+      const post = (c.postText || "").replace(/\s+/g, " ").slice(0, 450);
+      return `#${c.id} @${c.username} — ${c.status}${c.link ? ` (${c.link})` : ""}\n  Пост: ${post}\n  Комментарий: ${(c.text || "").replace(/\s+/g, " ")}`;
+    })
+    .join("\n");
+}
+
+// Найти комментарий по тексту сообщения, на которое Мастер ответил или которое переслал.
+export function findCommentByText(text) {
+  if (!text) return null;
+  const t = text.replace(/\s+/g, " ");
+  return (
+    getCommentHistory()
+      .slice()
+      .reverse()
+      .find((c) => (c.link && t.includes(c.link)) || (c.username && c.postId && t.includes(`t.me/${c.username}/${c.postId}`)) || (c.text && t.includes(c.text.replace(/\s+/g, " ").slice(0, 60)))) || null
+  );
 }

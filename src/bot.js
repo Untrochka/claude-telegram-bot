@@ -84,7 +84,7 @@ import {
 import { runRedditDigest, handleRedditCallback, applyRedditRewrite } from "./reddit.js";
 import { plannerTick, handlePlanCallback, morningBriefText } from "./planner.js";
 import { applyDraftRewrite, clientRulesText, clientCardText, clientButtons, postButtons } from "./rewrite.js";
-import { localRoute, logEvent, LOCAL_ACK, memoryForAgents } from "./team.js";
+import { localRoute, logEvent, LOCAL_ACK, memoryForAgents, findCommentByText } from "./team.js";
 import { setMemoryProvider } from "./comments.js";
 import { setPlannerMemoryProvider } from "./planner.js";
 import { parseTelegramExport } from "./importer.js";
@@ -1110,7 +1110,9 @@ async function handlePersonalMessage(msg) {
   const replied = msg.reply_to_message;
   if (replied && !text.startsWith("/")) {
     const draftId = findDraftByCardMessage(replied.message_id);
-    if (draftId) {
+    // Вопрос к карточке («актуален?», «?») — это не правка, отдаём Рафаэлю с контекстом.
+    const isQuestion = /\?\s*$/.test(text) || /^(почему|зачем|что|как|актуал|уверен|норм)/i.test(text.trim());
+    if (draftId && !isQuestion) {
       const stopTyping = keepTyping(chatId);
       try {
         if (await applyDraftRewrite(draftId, text)) return;
@@ -1119,7 +1121,20 @@ async function handlePersonalMessage(msg) {
       }
     }
     const quoted = (replied.text || replied.caption || "").slice(0, 1500);
-    if (quoted) text = `[Мастер отвечает на это сообщение бота:\n«${quoted}»]\n\n${text}`;
+    const fromBot = Boolean(replied.from?.is_bot);
+    const comment = findCommentByText(quoted);
+    const ctx = comment
+      ? `[Мастер отвечает на карточку комментария #${comment.id} (@${comment.username}, ${comment.status}). Пост: «${(comment.postText || "").slice(0, 600)}» Комментарий: «${comment.text}»]`
+      : quoted
+        ? `[Мастер отвечает на ${fromBot ? "сообщение бота" : "своё сообщение"}:\n«${quoted}»]`
+        : "";
+    if (ctx) text = `${ctx}\n\n${text}`;
+  } else if ((msg.forward_origin || msg.forward_from) && !images.length) {
+    // Пересланная карточка — даём Рафаэлю понять, что это за коммент.
+    const comment = findCommentByText(text);
+    if (comment) {
+      text = `[Мастер переслал карточку комментария #${comment.id} (@${comment.username}, ${comment.status}). Пост: «${(comment.postText || "").slice(0, 600)}» Комментарий: «${comment.text}»]\n\nЧто скажешь про этот комментарий?`;
+    }
   }
   const command = text.startsWith("/") ? text.split(/\s+/)[0].toLowerCase().replace(/@\w+$/, "") : null;
   if (command) logEvent(`Мастер: ${text.slice(0, 120)}`);

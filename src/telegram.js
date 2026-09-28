@@ -79,6 +79,7 @@ export async function sendMessageWithButtons(chatId, text, inlineKeyboard) {
 }
 
 export async function editMessageText(chatId, messageId, text) {
+  logOwner(chatId, text);
   return call("editMessageText", { chat_id: chatId, message_id: messageId, text });
 }
 

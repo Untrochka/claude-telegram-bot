@@ -84,6 +84,9 @@ import {
 import { runRedditDigest, handleRedditCallback, applyRedditRewrite } from "./reddit.js";
 import { plannerTick, handlePlanCallback, morningBriefText } from "./planner.js";
 import { applyDraftRewrite, clientRulesText, clientCardText, clientButtons, postButtons } from "./rewrite.js";
+import { localRoute, logEvent, LOCAL_ACK, memoryForAgents } from "./team.js";
+import { setMemoryProvider } from "./comments.js";
+import { setPlannerMemoryProvider } from "./planner.js";
 import { parseTelegramExport } from "./importer.js";
 import { getTemplate } from "./templates.js";
 import { checkPrices } from "./prices.js";
@@ -532,7 +535,7 @@ async function handleCallbackQuery(query) {
 const SECRETARY_CHAT_PREFIX = "secretary:";
 
 function formatTaskLine(t) {
-  const due = t.dueAt ? ` (напоминание: ${new Date(t.dueAt).toLocaleString("ru-RU")})` : "";
+  const due = t.dueAt ? ` (напоминание: ${new Date(t.dueAt).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", dateStyle: "short", timeStyle: "short" })})` : "";
   return `#${t.id} ${t.text}${due}`;
 }
 
@@ -572,7 +575,7 @@ async function handleRemindCommand(chatId, text) {
     return;
   }
   const id = createTask(parsed.text, parsed.dueAt);
-  await sendMessage(chatId, `Напомню #${id} в ${new Date(parsed.dueAt).toLocaleString("ru-RU")}.`);
+  await sendMessage(chatId, `Напомню #${id} в ${new Date(parsed.dueAt).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", dateStyle: "short", timeStyle: "short" })}.`);
 }
 
 function formatAgo(ts) {
@@ -832,24 +835,54 @@ function keepTyping(chatId) {
   return () => clearInterval(timer);
 }
 
-// Команды, которые Рафаэль запускает сам ([[ACTION: …]]).
-async function runRaphaelAction(chatId, { name, arg }) {
-  const map = {
-    watch_find: "/watch find",
-    watch_reset: "/watch reset",
-    watch_add: `/watch add ${arg}`,
-    watch_remove: `/watch remove ${arg}`,
-    comments_check: "/comments check",
-  };
+// Действия, которые запускает Рафаэль ([[ACTION: …]]) или локальный роутер
+// простых фраз (без Claude). Отправки клиентам здесь нет — только кнопкой.
+async function runRaphaelAction(chatId, { name, arg = "" }) {
   try {
-    if (map[name]) {
-      if ((name === "watch_add" || name === "watch_remove") && !arg) return;
-      if (name.startsWith("watch")) await handleWatchCommand(chatId, map[name]);
-      else await handleCommentsCommand(chatId, map[name]);
-    } else if (name === "reddit") await handleRedditCommand(chatId);
-    else if (name === "plan") await sendMessage(chatId, morningBriefText());
+    switch (name) {
+      case "watch_find":
+        return handleWatchCommand(chatId, "/watch find");
+      case "watch_reset":
+        return handleWatchCommand(chatId, "/watch reset");
+      case "watch_add":
+        return arg && handleWatchCommand(chatId, `/watch add ${arg}`);
+      case "watch_remove":
+        return arg && handleWatchCommand(chatId, `/watch remove ${arg}`);
+      case "comments_check":
+        return handleCommentsCommand(chatId, "/comments check");
+      case "comments_on":
+        return handleCommentsCommand(chatId, "/comments on");
+      case "comments_off":
+        return handleCommentsCommand(chatId, "/comments off");
+      case "reddit":
+        return handleRedditCommand(chatId);
+      case "plan":
+        return sendMessage(chatId, morningBriefText());
+      case "todo_list":
+        return handleTodoCommand(chatId, "/todo");
+      case "todo_add":
+        return arg && handleTodoCommand(chatId, `/todo ${arg}`);
+      case "todo_done":
+        return arg && handleTodoCommand(chatId, `/todo done ${arg.replace(/^#/, "")}`);
+      case "remind":
+        return arg && handleRemindCommand(chatId, `/remind ${arg}`);
+      case "remember":
+        if (!arg) return;
+        addMemory(arg);
+        return sendMessage(chatId, `🧠 Запомнил: ${arg}`);
+      case "auto_on":
+        return handleAutoCommand(chatId, "/auto on");
+      case "auto_off":
+        return handleAutoCommand(chatId, "/auto off");
+      case "model":
+        return arg && handleModelCommand(chatId, `/model ${arg}`);
+      case "day_start":
+        return handleDayCommand(chatId, "/day");
+      default:
+        return;
+    }
   } catch (err) {
-    console.error(`[bot] Действие Рафаэля ${name} упало:`, err.message);
+    console.error(`[bot] Действие ${name} упало:`, err.message);
   }
 }
 
@@ -864,6 +897,7 @@ async function secretaryTurn(chatId, text, images = []) {
       chatKey,
       text,
       images,
+      ownerChatId: chatId,
       fallbackHistory,
       onDelta: (t) => streamer.update(t),
       onStatus: (s) => streamer.status(s),
@@ -1088,6 +1122,7 @@ async function handlePersonalMessage(msg) {
     if (quoted) text = `[Мастер отвечает на это сообщение бота:\n«${quoted}»]\n\n${text}`;
   }
   const command = text.startsWith("/") ? text.split(/\s+/)[0].toLowerCase().replace(/@\w+$/, "") : null;
+  if (command) logEvent(`Мастер: ${text.slice(0, 120)}`);
 
   switch (command) {
     case "/start":
@@ -1151,6 +1186,16 @@ async function handlePersonalMessage(msg) {
 
   if (isContentModeActive(chatId)) {
     await runContentTurn(chatId, text, images);
+    return;
+  }
+
+  // Простые фразы — сами, без Claude (экономим лимиты). Рафаэль увидит это в журнале.
+  const route = !images.length && !msg.reply_to_message ? localRoute(text) : null;
+  if (route) {
+    logEvent(`Мастер: ${text.slice(0, 120)}`);
+    console.log(`[bot] Локально без Claude: ${route.action}`);
+    if (LOCAL_ACK[route.action]) await sendMessage(chatId, LOCAL_ACK[route.action]);
+    await runRaphaelAction(chatId, { name: route.action, arg: route.arg });
     return;
   }
 
@@ -1235,6 +1280,9 @@ async function registerCommands() {
 
 registerCommands();
 setOwnerLogger((text) => addBotNote(text));
+// Общая память: комментарии и адаптации постов знают, что Мастер просил запомнить.
+setMemoryProvider(memoryForAgents);
+setPlannerMemoryProvider(memoryForAgents);
 startMtproto().catch((err) => console.error("[mtproto] Старт:", err.message));
 // Тик агента независимо от long polling (getUpdates ждёт до 30 с).
 setInterval(agentTick, 20_000);

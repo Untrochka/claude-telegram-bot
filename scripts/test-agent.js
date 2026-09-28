@@ -17,6 +17,7 @@ const { tashkentNow, shouldFire, TASKS, taskDueToday } = await import("../src/pl
 const { strategiesFor, readStrategy, addStrategyNote, removeStrategyNote, strategiesBlock } = await import("../src/strategies.js");
 const { getModel, setModel, resetModels } = await import("../src/models.js");
 const { visibleRaphaelText } = await import("../src/raphael.js");
+const { localRoute } = await import("../src/team.js");
 
 let failed = 0;
 function check(name, cond) {
@@ -96,6 +97,16 @@ check("стрим чистит хвост", visibleRaphaelText("Ок, сейча
 check("стрим недописанный маркер", visibleRaphaelText("Текст [[CHA") === "Текст");
 check("стрим маркер с одной ]", visibleRaphaelText("Принято.\n\n[[STRATEGY_NOTE: clients | без «с радостью»]") === "Принято.");
 check("стрим прячет REWRITE", visibleRaphaelText("Сейчас переделаю\n[[REWRITE: 41 | короче]]") === "Сейчас переделаю");
+
+// Локальный роутер (без Claude)
+check("роутер: план", localRoute("план на сегодня")?.action === "plan");
+check("роутер: найди каналы", localRoute("найди ещё каналов")?.action === "watch_find");
+check("роутер: напомни", localRoute("напомни через 2 часа написать Алине")?.arg === "2h написать Алине");
+check("роутер: напомни мин", localRoute("напомни через 30 минут выпить воды")?.arg === "30m выпить воды");
+check("роутер: запомни", localRoute("запомни: созвон в пятницу")?.arg === "созвон в пятницу");
+check("роутер: задачи", localRoute("мои задачи")?.action === "todo_list");
+check("роутер: сложное -> Рафаэль", localRoute("найди мне клиентов и напиши им") === null);
+check("роутер: вопрос про каналы -> Рафаэль", localRoute("почему так мало каналов?") === null);
 
 if (process.argv.includes("--live")) {
   const { askRaphael } = await import("../src/claudeClient.js");

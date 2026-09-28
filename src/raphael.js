@@ -12,8 +12,8 @@ import { config } from "./config.js";
 import { askRaphael, continueContentSession } from "./claudeClient.js";
 import { strategiesFor, strategiesBlock, STRATEGIES } from "./strategies.js";
 import { isMtprotoReady, readChatByQuery, recentDialogsText } from "./mtproto.js";
-import { listRecentDrafts, getBotNotes } from "./state.js";
-import { getWatch, commentsActive } from "./comments.js";
+import { listRecentDrafts } from "./state.js";
+import { botStateText, eventsText } from "./team.js";
 import { recentDraftsText } from "./rewrite.js";
 import {
   getHistory,
@@ -32,8 +32,26 @@ const MAX_TRANSCRIPT_CHARS = 30_000;
 const CHAT_INDEX_LIMIT = 15;
 const CHAT_REQUEST_RE = /\[\[CHAT:\s*([^\]]+?)\s*\]\]/gi;
 const hasChatRequest = (text) => /\[\[CHAT:/i.test(text);
-const ACTION_RE = /\[\[ACTION:\s*([a-z_]+)(?:\s+(@?[\w.\/:-]+))?\s*\]\]/gi;
-export const ACTIONS = ["watch_find", "watch_reset", "watch_add", "watch_remove", "comments_check", "reddit", "plan"];
+const ACTION_RE = /\[\[ACTION:\s*([a-z_]+)\s*([^\]]*?)\s*\]\]/gi;
+export const ACTIONS = [
+  "watch_find",
+  "watch_reset",
+  "watch_add",
+  "watch_remove",
+  "comments_check",
+  "comments_on",
+  "comments_off",
+  "reddit",
+  "plan",
+  "todo_add",
+  "todo_done",
+  "remind",
+  "remember",
+  "auto_on",
+  "auto_off",
+  "model",
+  "day_start",
+];
 const REWRITE_RE = /\[\[REWRITE:\s*#?(\d+)\s*\|\s*([^\]]+?)\s*\]\]/gi;
 const NOTE_RE = /\[\[STRATEGY_NOTE:\s*([a-z]+)\s*\|\s*([^\]]+?)\s*\]\]/gi;
 
@@ -51,18 +69,6 @@ function nowInTashkent() {
 
 function formatDate(ts) {
   return ts ? new Date(ts).toLocaleString("ru-RU", { timeZone: "Asia/Tashkent", dateStyle: "short", timeStyle: "short" }) : "?";
-}
-
-function botNotesText() {
-  const notes = getBotNotes().slice(-8);
-  if (!notes.length) return "(пока ничего)";
-  return notes.map((n) => `[${formatDate(n.ts)}] ${n.text.replace(/\s+/g, " ").slice(0, 350)}`).join("\n");
-}
-
-function agentStatusText() {
-  const watch = Object.entries(getWatch());
-  const list = watch.length ? watch.map(([u, c]) => `@${u} (${c.title || ""})`).join(", ") : "список пуст";
-  return `${commentsActive() ? "работает" : "выключен или MTProto не подключён"}. Каналов ${watch.length}: ${list}.`;
 }
 
 export function memoryText() {
@@ -93,7 +99,7 @@ function sharedKnowledge() {
   ].join("\n\n");
 }
 
-export async function buildRaphaelSystem(userText = "") {
+export async function buildRaphaelSystem(userText = "", ownerChatId = null) {
   const mt = isMtprotoReady();
   const dialogs = mt ? await recentDialogsText(15) : "";
   const strategyNames = strategiesFor(userText);
@@ -107,18 +113,26 @@ export async function buildRaphaelSystem(userText = "") {
 ${strategiesBlock(strategyNames)}`,
     `## Правила и стратегии меняются словами Мастера (без правки кода)
 Если Мастер хочет, чтобы бот впредь делал что-то иначе — в стратегии («теперь на Contra 4 поста в неделю»), в ответах клиентам («пиши клиентам проще, без "с радостью"», «не предлагай созвон сразу»), в комментариях, в постах или в твоём собственном тоне («отвечай короче», «не называй меня Мастер») — в конце ответа добавь отдельной строкой [[STRATEGY_NOTE: имя | правило одной фразой]]. Имена: ${Object.keys(STRATEGIES).join(", ")} (clients — ответы клиентам, raphael — как ты общаешься, comments — комментарии, telegram — посты канала). Бот покажет кнопку «Сохранить». Добавляй, когда Мастер просит поменять поведение насовсем или ругается на то, как бот что-то делает; разовую просьбу «перепиши этот ответ» правилом не делай.`,
-    `## Что бот присылал в этот чат сам (не ты): отчёты, списки, карточки, напоминания — новые снизу
-${botNotesText()}
-Если Мастер ссылается на это («4 канала мало», «что за список») — это сообщения бота, ты их видишь здесь. Не говори, что ничего не присылал.`,
-    `## Агент комментариев сейчас
-${agentStatusText()}
-Ты можешь сам запускать команды бота — добавь отдельной строкой [[ACTION: команда]]:
-- watch_find — поискать ещё каналы для комментариев (идёт 3–6 минут, результат бот пришлёт сам);
-- watch_reset — убрать найденные автоматически и искать заново;
-- watch_add @канал / watch_remove @канал — добавить или убрать канал;
-- comments_check — проверить каналы на новые посты сейчас;
-- reddit — найти вопросы на Reddit; plan — план на сегодня.
-Например, Мастер: «найди ещё каналов» → коротко ответь «Ищу ещё, пришлю список» и добавь [[ACTION: watch_find]]. Каналы для комментариев ищет бот через Telegram — не ищи их в вебе и не выдумывай.`,
+    `## Ты и бот — одна команда
+Ты — голова бота untra_claude_manager, он — твои руки. Всё, что делает бот (автоответы клиентам, агент комментариев, напоминания, посты, Reddit), — это вы вместе. Команды Мастера бот выполняет сам без тебя, чтобы экономить лимиты; ты видишь их в журнале ниже.
+
+### Состояние бота сейчас
+${botStateText(ownerChatId)}
+
+### Журнал: команды Мастера и сообщения, которые бот присылал сам (новые снизу)
+${eventsText(8)}
+Если Мастер ссылается на это («4 канала мало», «что за карточка») — ты это видишь здесь. Не говори, что ничего не присылал.
+
+### Что ты можешь сделать сам — добавь отдельной строкой [[ACTION: команда аргументы]]
+- watch_find — поискать ещё каналов для комментариев (3–6 минут, бот пришлёт список); watch_reset — пересобрать список заново; watch_add @канал / watch_remove @канал.
+- comments_check — проверить каналы на новые посты сейчас; comments_on / comments_off — включить/выключить агента комментариев.
+- reddit — подобрать вопросы на Reddit; plan — план на сегодня.
+- todo_add текст — задача; todo_done номер — закрыть задачу; remind 30m|2h|1d текст — напоминание.
+- remember факт — запомнить надолго (видят все части бота: комментарии, посты, ответы клиентам).
+- auto_on / auto_off — автоответы клиентам; model роль модель (роли: raphael, day, clients, filter, writer; модели: haiku, sonnet, opus).
+- day_start — начать разбор дня для постов.
+Отправить сообщение клиенту или опубликовать что-то ты сам не можешь — только Мастер кнопкой ✅. Каналы для комментариев ищет бот через Telegram — не ищи их в вебе и не выдумывай.
+Коротко скажи Мастеру, что делаешь («Ищу ещё каналы, пришлю список»), и добавь действие. Не спрашивай разрешения на безопасные действия (поиск, проверка, задача, напоминание, память).`,
     `## Черновики на утверждении (карточки в чате)
 ${recentDraftsText(listRecentDrafts(6))}
 Если Мастер просит переделать черновик («измени ответ клиенту», «слишком иишно», «пост слишком длинный») — выбери нужный черновик (обычно последний подходящий) и добавь отдельной строкой [[REWRITE: номер | что поменять, своими словами Мастера]]. Бот сам перепишет и пришлёт новую карточку с кнопками — сам текст ответа клиенту не пиши. Если непонятно, какой черновик, — спроси коротко.`,
@@ -184,15 +198,15 @@ export function visibleRaphaelText(text) {
   // Недописанный служебный маркер в конце (ещё нет закрывающих ]]) — прячем.
   const open = out.lastIndexOf("[[");
   if (open !== -1 && !out.slice(open).includes("]]")) out = out.slice(0, open);
-  return out.trim();
+  return out.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 // Один ход разговора с Рафаэлем. chatKey — ключ сессии (secretary:<chatId>).
 // fallbackHistory — для режима api (без сессий).
 // -> { text, notes: [{ name, text }] }
 // onDelta — стриминг текста в Telegram; onStatus — «читаю переписку…».
-export async function raphaelTurn({ chatKey, text, images = [], fallbackHistory = [], onDelta = null, onStatus = null }) {
-  const systemText = await buildRaphaelSystem(text);
+export async function raphaelTurn({ chatKey, text, images = [], fallbackHistory = [], onDelta = null, onStatus = null, ownerChatId = null }) {
+  const systemText = await buildRaphaelSystem(text, ownerChatId);
   const fallbackPrompt = [...fallbackHistory.map((m) => `${m.role === "azizhon" ? "Мастер" : "Рафаэль"}: ${m.text}`), `Мастер: ${text}`].join("\n");
 
   let { text: reply, sessionId } = await askRaphael({
@@ -224,11 +238,11 @@ export async function raphaelTurn({ chatKey, text, images = [], fallbackHistory 
     .filter((n) => STRATEGIES[n.name]);
   const rewrites = [...reply.matchAll(REWRITE_RE)].map((m) => ({ draftId: m[1], instruction: m[2].trim() }));
   const actions = [...reply.matchAll(ACTION_RE)]
-    .map((m) => ({ name: m[1].toLowerCase(), arg: m[2] || "" }))
+    .map((m) => ({ name: m[1].toLowerCase(), arg: (m[2] || "").trim() }))
     .filter((a) => ACTIONS.includes(a.name));
   // Если модель всё ещё просит чаты после лимита — не показываем служебные строки.
   return {
-    text: reply.replace(CHAT_REQUEST_RE, "").replace(NOTE_RE, "").replace(REWRITE_RE, "").replace(ACTION_RE, "").trim(),
+    text: reply.replace(CHAT_REQUEST_RE, "").replace(NOTE_RE, "").replace(REWRITE_RE, "").replace(ACTION_RE, "").replace(/\n{3,}/g, "\n\n").trim(),
     notes,
     rewrites,
     actions,

@@ -18,6 +18,19 @@ import { pendingCommentDrafts, discoveryReportText, commentsActive } from "./com
 import { runRedditDigest } from "./reddit.js";
 import { isMtprotoReady } from "./mtproto.js";
 
+// Память Мастера — через провайдера (team.js импортирует planner.js).
+let memoryProvider = () => "";
+export function setPlannerMemoryProvider(fn) {
+  memoryProvider = fn;
+}
+function getMemoryForAgents() {
+  try {
+    return memoryProvider() || "";
+  } catch {
+    return "";
+  }
+}
+
 // --- Время Ташкента ---
 export function tashkentNow(date = new Date()) {
   const parts = Object.fromEntries(
@@ -143,7 +156,7 @@ async function adaptPost(platform) {
       : `Сделай пост для LinkedIn на английском по стратегии ниже (формат A или B, 2–4 предложения фактов, ноль кринжа, без длинных тире «—» и без эмодзи). Если исходный пост про жизнь/клиентов/учёбу и для LinkedIn не подходит — ответь одним словом SKIP.\n\n${readStrategy("linkedin")}`;
   const raw = await runOneShot({
     role: "writer",
-    system: `Ты адаптируешь посты Азиза (frontend-разработчик, бренд Untra.dev) под другие площадки. Ничего не выдумывай сверх исходного поста.\n\n${rules}`,
+    system: `Ты адаптируешь посты Азиза (frontend-разработчик, бренд Untra.dev) под другие площадки. Ничего не выдумывай сверх исходного поста.\n\n${rules}\n\n${getMemoryForAgents()}`,
     prompt: `Исходный пост из Telegram-канала:\n<<<\n${p.text}\n>>>\nВерни только готовый текст.`,
     timeoutMs: 120_000,
   });

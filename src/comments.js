@@ -360,6 +360,19 @@ function knowledgeText() {
   }
 }
 
+// team.js импортирует comments.js, поэтому берём память лениво, без циклического импорта.
+let memoryFn = () => "";
+export function setMemoryProvider(fn) {
+  memoryFn = fn;
+}
+function memoryForAgentsSafe() {
+  try {
+    return memoryFn() || "";
+  } catch {
+    return "";
+  }
+}
+
 function feedbackText() {
   const fb = getAgentValue("commentFeedback", []);
   if (!fb.length) return "Правок пока не было.";
@@ -379,6 +392,8 @@ ${readStrategy("comments")}`;
 const WRITER_SYSTEM = () => `Ты пишешь комментарий под постом в Telegram от имени канала Азиза Untra.dev (это его личный бренд: пишешь от первого лица, «я»).
 Факты об Азизе — только отсюда, ничего не выдумывай (никаких «у моего клиента продажи выросли на 40%»):
 ${knowledgeText()}
+
+${memoryForAgentsSafe()}
 
 ВАЖНО про опыт — самая частая ошибка:
 - У Азиза НЕТ своего магазина, салона или бизнеса. Не пиши от лица владельца («у нас в магазине», «я у себя автоматизировал», «наши клиенты»).

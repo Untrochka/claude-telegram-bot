@@ -4,23 +4,62 @@
 // Реальные slash-команды для меню Telegram (setMyCommands). Описание короткое —
 // это то, что видно в списке команд под полем ввода.
 export const MENU_COMMANDS = [
-  { command: "help", description: "Список всех команд с примерами" },
-  { command: "auto", description: "Автоответы: статус, on/off" },
-  { command: "todo", description: "Задачи: список, добавить, закрыть" },
-  { command: "remind", description: "Напоминание через время" },
-  { command: "chats", description: "Список клиентских чатов" },
-  { command: "chat", description: "Переписка с одним клиентом" },
+  { command: "help", description: "Все команды + быстрые кнопки" },
+  { command: "plan", description: "План на сегодня по площадкам" },
+  { command: "todo", description: "[текст] | done [№] — задачи (кнопки)" },
+  { command: "remind", description: "[30m|2h|1d] [текст] — напомнить" },
+  { command: "chats", description: "Клиентские чаты — открыть кнопкой" },
+  { command: "chat", description: "[имя|id] — разобрать переписку" },
+  { command: "auto", description: "[on|off] — автоответы клиентам" },
+  { command: "comments", description: "[check|on|off] — агент комментариев" },
+  { command: "watch", description: "[find|reset|add @канал|remove @канал]" },
+  { command: "reddit", description: "Найти вопросы на Reddit сейчас" },
   { command: "day", description: "Разбор дня для постов в каналы" },
   { command: "stop", description: "Выйти из разбора дня" },
+  { command: "remember", description: "[факт] — запомнить надолго" },
+  { command: "memory", description: "Что помню (удалить кнопкой)" },
+  { command: "forget", description: "[№] — забыть факт" },
+  { command: "strategy", description: "[имя] [+ правка] — стратегии" },
+  { command: "model", description: "[роль] [low…max] — effort Opus 5.5" },
   { command: "new", description: "Рафаэль: начать разговор заново" },
-  { command: "remember", description: "Запомнить факт надолго" },
-  { command: "memory", description: "Что бот помнит" },
-  { command: "plan", description: "План на сегодня по площадкам" },
-  { command: "comments", description: "Агент комментариев: статус, check, on/off" },
-  { command: "watch", description: "Каналы для комментариев" },
-  { command: "reddit", description: "Найти вопросы на Reddit сейчас" },
-  { command: "strategy", description: "Стратегии и правки к ним" },
-  { command: "model", description: "Opus 5.5: effort по ролям" },
+];
+
+// --- Кнопки вместо набора аргументов ---
+// m:<команда> — бот выполняет команду так, будто ты её написал;
+// m:?<команда> — бот спрашивает недостающий текст, следующее сообщение
+// дописывается к команде. callback_data у Telegram — максимум 64 байта.
+export function cmdBtn(text, command) {
+  return { text, callback_data: `m:${command}`.slice(0, 64) };
+}
+
+export function askBtn(text, command) {
+  return { text, callback_data: `m:?${command}`.slice(0, 64) };
+}
+
+export function grid(buttons, perRow = 2) {
+  const rows = [];
+  for (let i = 0; i < buttons.length; i += perRow) rows.push(buttons.slice(i, i + perRow));
+  return rows;
+}
+
+// Что спросить, когда команде не хватает текста.
+export function askPrompt(command) {
+  if (command === "/todo") return "Напиши задачу одним сообщением.";
+  if (command === "/remind") return "Когда и что? Например: «2h позвонить Ильясу», «30 минут выпить воды», «1d отправить счёт».";
+  if (command === "/remember") return "Что запомнить? Одним сообщением.";
+  if (command === "/watch add") return "Пришли @канал или ссылку t.me/…";
+  if (command === "/chat") return "Имя или id чата?";
+  const st = command.match(/^\/strategy (\w+) \+$/);
+  if (st) return `Напиши правку к стратегии «${st[1]}» — одной фразой, как надо делать впредь.`;
+  return "Напиши, что добавить к команде.";
+}
+
+// Быстрые кнопки под /start и /help.
+export const QUICK_MENU = [
+  [cmdBtn("📅 План", "/plan"), cmdBtn("✅ Задачи", "/todo"), askBtn("⏰ Напомнить", "/remind")],
+  [cmdBtn("💬 Чаты", "/chats"), cmdBtn("🤖 Автоответы", "/auto"), cmdBtn("🧠 Память", "/memory")],
+  [cmdBtn("✍️ Комменты", "/comments"), cmdBtn("📡 Каналы", "/watch"), cmdBtn("🟠 Reddit", "/reddit")],
+  [cmdBtn("📝 Разбор дня", "/day"), cmdBtn("🎯 Стратегии", "/strategy"), cmdBtn("⚙️ Effort", "/model")],
 ];
 
 // Группы для /help и /start — ровно в этом порядке.

@@ -66,7 +66,7 @@ import {
 import { generateReply } from "./claudeClient.js";
 import { raphaelTurn, resetRaphael, contentTurn, memoryText, visibleRaphaelText } from "./raphael.js";
 import { createStreamer } from "./stream.js";
-import { modelsText, setEffort, resetEfforts, ROLES, EFFORTS } from "./models.js";
+import { modelsText, setEffort, resetEfforts, getEffort, ROLES, EFFORTS } from "./models.js";
 import { STRATEGIES, readStrategy, strategiesListText, addStrategyNote, removeStrategyNote } from "./strategies.js";
 import { startMtproto, isMtprotoReady } from "./mtproto.js";
 import {
@@ -88,12 +88,12 @@ import { runRedditDigest, handleRedditCallback, applyRedditRewrite } from "./red
 import { plannerTick, handlePlanCallback, morningBriefText } from "./planner.js";
 import { applyDraftRewrite, clientRulesText, clientCardText, clientButtons, postButtons } from "./rewrite.js";
 import { localRoute, logEvent, LOCAL_ACK, memoryForAgents, findCommentByText } from "./team.js";
-import { setMemoryProvider } from "./comments.js";
+import { setMemoryProvider, getWatch } from "./comments.js";
 import { setPlannerMemoryProvider } from "./planner.js";
 import { parseTelegramExport } from "./importer.js";
 import { getTemplate } from "./templates.js";
 import { checkPrices } from "./prices.js";
-import { MENU_COMMANDS, buildHelpText } from "./commands.js";
+import { MENU_COMMANDS, buildHelpText, cmdBtn, askBtn, grid, askPrompt, QUICK_MENU } from "./commands.js";
 import { extractMedia, hasMedia, MediaError } from "./media.js";
 import { toTelegramHtml, splitForTelegram } from "./format.js";
 
@@ -412,6 +412,29 @@ async function replyToBatch(chatId, batch) {
   await sendDraftCard(connectionId, chatId, intent, customerText, outgoingText, priceWarning);
 }
 
+// --- Кнопки команд (m:…) ---
+// Нажатие = как будто Мастер написал команду сам; «?» — спросить недостающий текст.
+async function askForInput(chatId, command) {
+  setAgentValue("pendingCommand", { cmd: command, ts: Date.now() });
+  await sendMessageWithButtons(chatId, askPrompt(command), [[cmdBtn("✖ Отмена", "!cancel")]]);
+}
+
+async function handleMenuCallback(query, command) {
+  const chatId = query.message.chat.id;
+  if (command === "!cancel") {
+    setAgentValue("pendingCommand", null);
+    await answerCallbackQuery(query.id, "Отменил").catch(() => {});
+    return;
+  }
+  if (command.startsWith("?")) {
+    await askForInput(chatId, command.slice(1));
+    await answerCallbackQuery(query.id, "Жду текст").catch(() => {});
+    return;
+  }
+  await answerCallbackQuery(query.id).catch(() => {});
+  enqueuePersonal({ chat: { id: chatId, type: "private" }, from: { id: config.ownerTelegramId }, text: command });
+}
+
 // Кнопки агента: c — комментарии, r — Reddit, p — напоминания, sn — правка стратегии.
 async function handleAgentCallback(query, prefix, action, id) {
   let answer = null;
@@ -465,6 +488,10 @@ async function handleCallbackQuery(query) {
     return;
   }
 
+  if ((query.data || "").startsWith("m:")) {
+    await handleMenuCallback(query, query.data.slice(2));
+    return;
+  }
   const [prefix, action, draftId] = (query.data || "").split(":");
   if (prefix !== "d") {
     await handleAgentCallback(query, prefix, action, draftId);
@@ -547,7 +574,12 @@ async function handleTodoCommand(chatId, text) {
 
   if (!rest || rest === "list") {
     const tasks = listOpenTasks();
-    await sendMessage(chatId, tasks.length ? tasks.map(formatTaskLine).join("\n") : "Открытых задач нет.");
+    const done = tasks.slice(0, 12).map((t) => cmdBtn(`✅ #${t.id}`, `/todo done ${t.id}`));
+    await sendMessageWithButtons(
+      chatId,
+      tasks.length ? `${tasks.map(formatTaskLine).join("\n")}\n\nЗакрыть — нажми ✅ с номером.` : "Открытых задач нет.",
+      [...grid(done, 4), [askBtn("➕ Задача", "/todo"), askBtn("⏰ Напоминание", "/remind")]]
+    );
     return;
   }
 
@@ -572,9 +604,19 @@ function parseRemind(text) {
 }
 
 async function handleRemindCommand(chatId, text) {
-  const parsed = parseRemind(text);
+  const rest = text.replace(/^\/remind\s*/i, "").trim();
+  if (!rest) {
+    await askForInput(chatId, "/remind");
+    return;
+  }
+  // Понимаем и «2 часа позвонить», «30 минут …» — через тот же разбор, что «напомни через …».
+  let parsed = parseRemind(text);
   if (!parsed) {
-    await sendMessage(chatId, "Формат: /remind 30m текст  /remind 2h текст  /remind 1d текст");
+    const r = localRoute(`напомни через ${rest.replace(/^через\s+/i, "")}`);
+    if (r?.action === "remind") parsed = parseRemind(`/remind ${r.arg}`);
+  }
+  if (!parsed) {
+    await sendMessageWithButtons(chatId, "Не понял срок. Пиши так: 30m текст, 2h текст, 1d текст (или «2 часа текст»).", [[askBtn("⏰ Ещё раз", "/remind")]]);
     return;
   }
   const id = createTask(parsed.text, parsed.dueAt);
@@ -608,15 +650,18 @@ async function handleChatsCommand(chatId) {
     const name = s.title || "без имени";
     return `${kindIcon[s.kind] || "•"} ${name} #${s.chatId} — ${s.count} сообщ., последнее ${formatAgo(s.lastTs)} (${who}): ${s.lastText.replace(/\s+/g, " ").slice(0, 60)}`;
   });
-  const text = `Все чаты, которые видел бот (${summaries.length}):\n\n${lines.join("\n")}\n\nСпроси Рафаэля про любой из них по имени — он сам прочитает переписку.`;
-  for (const chunk of splitForTelegram(text)) await sendMessage(chatId, chunk);
+  const text = `Все чаты, которые видел бот (${summaries.length}):\n\n${lines.join("\n")}\n\nНажми на чат — Рафаэль прочитает переписку и скажет, на чём остановились.`;
+  const chunks = splitForTelegram(text);
+  for (const chunk of chunks.slice(0, -1)) await sendMessage(chatId, chunk);
+  const open = summaries.slice(0, 12).map((s) => cmdBtn(`${kindIcon[s.kind] || "•"} ${(s.title || String(s.chatId)).slice(0, 22)}`, `/chat ${s.chatId}`));
+  await sendMessageWithButtons(chatId, chunks[chunks.length - 1], grid(open, 2));
 }
 
 // /chat <id или имя> — то же, что спросить Рафаэля: он сам подгрузит переписку.
 async function handleChatCommand(ownerChatId, text) {
   const target = text.replace(/^\/chat\s*/i, "").trim();
   if (!target) {
-    await sendMessage(ownerChatId, "Формат: /chat <имя или id> — список в /chats");
+    await handleChatsCommand(ownerChatId);
     return;
   }
   await secretaryTurn(ownerChatId, `Прочитай переписку с «${target}» и коротко скажи, с кем она и на чём остановились.`);
@@ -740,21 +785,26 @@ async function handleMemoryCommand(chatId, text) {
 
   if (command === "/remember") {
     if (!rest) {
-      await sendMessage(chatId, "Формат: /remember факт. Например: /remember Бахтиёр из «Малибу» хочет каталог к 1 ноября");
+      await askForInput(chatId, "/remember");
       return;
     }
     const n = addMemory(rest);
     await sendMessage(chatId, `Запомнил (#${n}). Рафаэль и /day будут это знать.`);
     return;
   }
-  if (command === "/forget") {
+  if (command === "/forget" && rest) {
     const index = Number(rest) - 1;
-    await sendMessage(chatId, removeMemory(index) ? `Забыл #${rest}.` : "Такого номера нет. Список — /memory");
-    return;
+    // Номера сдвигаются после удаления — сразу показываем свежий список с новыми кнопками.
+    await sendMessage(chatId, removeMemory(index) ? `Забыл #${rest}. Номера обновились:` : "Такого номера нет.");
   }
   // /memory
   const facts = listMemory();
-  await sendMessage(chatId, facts.length ? `Что я помню:\n${memoryText()}\n\nУдалить — /forget номер` : "Пока ничего. Добавить — /remember факт");
+  const forget = facts.slice(0, 16).map((_, i) => cmdBtn(`🗑 ${i + 1}`, `/forget ${i + 1}`));
+  await sendMessageWithButtons(
+    chatId,
+    facts.length ? `Что я помню:\n${memoryText()}\n\nУдалить — 🗑 с номером.` : "Пока ничего не помню.",
+    [...grid(forget, 4), [askBtn("➕ Запомнить", "/remember")]]
+  );
 }
 
 // --- Импорт экспорта Telegram Desktop (result.json) ---
@@ -825,9 +875,10 @@ async function handleAutoCommand(chatId, text) {
   const active = isAutoSendActive();
   const count = getTodayAutoSendCount();
   const dryRunNote = config.dryRun ? "\n🧪 DRY_RUN включён — реальных отправок клиентам сейчас нет." : "";
-  await sendMessage(
+  await sendMessageWithButtons(
     chatId,
-    `Автоответы сейчас ${active ? "включены ✅" : "выключены ⛔"}.\nОтправлено автоматически сегодня: ${count}.\n\n/auto on — включить, /auto off — выключить.${dryRunNote}`
+    `Автоответы сейчас ${active ? "включены ✅" : "выключены ⛔"}.\nОтправлено автоматически сегодня: ${count}.${dryRunNote}`,
+    [[active ? cmdBtn("⛔ Выключить", "/auto off") : cmdBtn("✅ Включить", "/auto on")]]
   );
 }
 
@@ -939,7 +990,11 @@ async function secretaryTurn(chatId, text, images = []) {
 async function handleModelCommand(chatId, text) {
   const args = text.split(/\s+/).slice(1).map((a) => a.toLowerCase());
   if (!args.length) {
-    await sendMessage(chatId, modelsText());
+    const roleBtns = Object.keys(ROLES).map((r) => cmdBtn(`${r}: ${getEffort(r)}`, `/model ${r}`));
+    await sendMessageWithButtons(chatId, `${modelsText()}\n\nНажми на роль, чтобы поменять effort.`, [
+      ...grid(roleBtns, 2),
+      [cmdBtn("Все сразу", "/model all"), cmdBtn("↩️ Везде low", "/model reset")],
+    ]);
     return;
   }
   if (args[0] === "reset") {
@@ -948,6 +1003,11 @@ async function handleModelCommand(chatId, text) {
     return;
   }
   const [role, effort] = args;
+  if ((ROLES[role] || role === "all") && !effort) {
+    const cur = role === "all" ? "" : ` (сейчас ${getEffort(role)})`;
+    await sendMessageWithButtons(chatId, `Effort для ${role === "all" ? "всех ролей" : role}${cur}:`, grid(EFFORTS.map((e) => cmdBtn(e, `/model ${role} ${e}`)), 3));
+    return;
+  }
   if (role === "all" && EFFORTS.includes(effort)) {
     for (const r of Object.keys(ROLES)) setEffort(r, effort);
     await sendMessage(chatId, `Поставил effort ${effort} везде.\n\n${modelsText()}`);
@@ -964,7 +1024,7 @@ async function handleModelCommand(chatId, text) {
 async function handleStrategyCommand(chatId, text) {
   const rest = text.replace(/^\/strategy\s*/i, "").trim();
   if (!rest) {
-    await sendMessage(chatId, strategiesListText());
+    await sendMessageWithButtons(chatId, strategiesListText(), grid(Object.entries(STRATEGIES).map(([n, label]) => cmdBtn(label, `/strategy ${n}`)), 2));
     return;
   }
   const m = rest.match(/^(\w+)\s*(?:([+-])\s*([\s\S]*))?$/);
@@ -983,7 +1043,9 @@ async function handleStrategyCommand(chatId, text) {
     await sendMessage(chatId, ok ? "Удалил правку." : "Нет правки с таким номером.");
     return;
   }
-  for (const chunk of splitForTelegram(readStrategy(name))) await sendMessage(chatId, chunk);
+  const chunks = splitForTelegram(readStrategy(name));
+  for (const chunk of chunks.slice(0, -1)) await sendMessage(chatId, chunk);
+  await sendMessageWithButtons(chatId, chunks[chunks.length - 1], [[askBtn("➕ Добавить правку", `/strategy ${name} +`), cmdBtn("↩️ Все стратегии", "/strategy")]]);
 }
 
 // Фоновые задачи агента не должны держать long polling.
@@ -1016,6 +1078,10 @@ async function handleWatchCommand(chatId, text) {
     await sendMessage(chatId, removeWatch(arg));
     return;
   }
+  if (sub === "add" && !arg) {
+    await askForInput(chatId, "/watch add");
+    return;
+  }
   if (sub === "find" || sub === "reset") {
     const cleared = sub === "reset" ? resetAutoWatch() : 0;
     const started = runAgentJob("discovery", async () => {
@@ -1026,7 +1092,14 @@ async function handleWatchCommand(chatId, text) {
     await sendMessage(chatId, started ? `${cleared ? `Убрал ${cleared} найденных раньше каналов. ` : ""}Ищу каналы (СНГ на русском и англоязычные) — займёт 3–6 минут: паузы между запросами, чтобы Telegram не ругался. Список пришлю сам…` : "Поиск уже идёт.");
     return;
   }
-  for (const chunk of splitForTelegram(watchListText())) await sendMessage(chatId, chunk);
+  const chunks = splitForTelegram(watchListText());
+  for (const chunk of chunks.slice(0, -1)) await sendMessage(chatId, chunk);
+  const removeBtns = Object.keys(getWatch()).slice(0, 20).map((u) => cmdBtn(`✖ @${u}`.slice(0, 30), `/watch remove ${u}`));
+  await sendMessageWithButtons(chatId, `${chunks[chunks.length - 1]}${removeBtns.length ? "\n\n✖ — убрать канал из списка." : ""}`, [
+    [cmdBtn("🔍 Найти ещё", "/watch find"), askBtn("➕ Добавить", "/watch add")],
+    [cmdBtn("♻️ Пересобрать заново", "/watch reset")],
+    ...grid(removeBtns, 2),
+  ]);
 }
 
 async function handleCommentsCommand(chatId, text) {
@@ -1044,7 +1117,11 @@ async function handleCommentsCommand(chatId, text) {
     await sendMessage(chatId, started ? "Проверяю каналы…" : "Проверка уже идёт.");
     return;
   }
-  await sendMessage(chatId, commentsStatusText());
+  const on = getAgentValue("commentsOn", true);
+  await sendMessageWithButtons(chatId, commentsStatusText(), [
+    [cmdBtn("🔄 Проверить сейчас", "/comments check"), on ? cmdBtn("⏸ Выключить", "/comments off") : cmdBtn("▶️ Включить", "/comments on")],
+    [cmdBtn("📡 Каналы", "/watch")],
+  ]);
 }
 
 async function handleRedditCommand(chatId) {
@@ -1114,6 +1191,19 @@ async function handlePersonalMessage(msg) {
   if (!text) return;
 
   console.log(`[bot] Сообщение от Азизхона: ${text.slice(0, 80)}`);
+  // После кнопки «➕ …» следующее сообщение — это текст к команде.
+  const pendingCmd = getAgentValue("pendingCommand", null);
+  if (pendingCmd) {
+    setAgentValue("pendingCommand", null);
+    const newerRewrite = (getAgentValue("pendingRewrite", null)?.ts || 0) > pendingCmd.ts;
+    if (!newerRewrite && !images.length && !text.startsWith("/") && Date.now() - pendingCmd.ts < 10 * 60_000) {
+      if (isCancelText(text)) {
+        await sendMessage(chatId, "Ок, отменил.");
+        return;
+      }
+      text = `${pendingCmd.cmd} ${text}`;
+    }
+  }
   if (!images.length && (await consumePendingRewrite(chatId, text))) return;
 
   // Ответ (reply) на сообщение бота: на карточку черновика — это правка черновика;
@@ -1169,10 +1259,12 @@ async function handlePersonalMessage(msg) {
 
   switch (command) {
     case "/start":
-      await sendMessage(chatId, `Рафаэль на связи. Пиши как есть — текстом, голосом, скрином. Вот все команды:\n\n${buildHelpText()}`);
+      for (const chunk of splitForTelegram(`Рафаэль на связи. Пиши как есть — текстом, голосом, скрином. Вот все команды:\n\n${buildHelpText()}`)) await sendMessage(chatId, chunk);
+      await sendMessageWithButtons(chatId, "Быстрые кнопки — жми, печатать не надо:", QUICK_MENU);
       return;
     case "/help":
-      await sendMessage(chatId, buildHelpText());
+      for (const chunk of splitForTelegram(buildHelpText())) await sendMessage(chatId, chunk);
+      await sendMessageWithButtons(chatId, "Быстрые кнопки — жми, печатать не надо:", QUICK_MENU);
       return;
     case "/auto":
       await handleAutoCommand(chatId, text);

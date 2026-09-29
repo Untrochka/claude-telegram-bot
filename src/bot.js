@@ -75,6 +75,9 @@ import {
   processCommentQueue,
   handleCommentCallback,
   applyCommentRewrite,
+  isCancelText,
+  cancelOrOfferDelete,
+  latestCancellableId,
   watchListText,
   addWatchManual,
   removeWatch,
@@ -878,6 +881,14 @@ async function runRaphaelAction(chatId, { name, arg = "" }) {
         return arg && handleModelCommand(chatId, `/model ${arg}`);
       case "day_start":
         return handleDayCommand(chatId, "/day");
+      case "comment_cancel":
+      case "comment_delete": {
+        // Удаление — только кнопкой Мастера: здесь максимум присылаем кнопку.
+        const id = arg.replace(/^#/, "").trim() || latestCancellableId();
+        if (!id) return sendMessage(chatId, "Нечего отменять: в очереди пусто, недавно ничего не уходило.");
+        const r = await cancelOrOfferDelete(id);
+        return r && sendMessage(chatId, r);
+      }
       default:
         return;
     }
@@ -1108,6 +1119,23 @@ async function handlePersonalMessage(msg) {
   // Ответ (reply) на сообщение бота: на карточку черновика — это правка черновика;
   // на любое другое — даём Рафаэлю контекст, на что именно ответил Мастер.
   const replied = msg.reply_to_message;
+  // «отмени», «бро отмен», «стоп» — отмена отправки комментария, без Claude.
+  if (!images.length && isCancelText(text)) {
+    let target = null;
+    if (replied) {
+      const rid = findDraftByCardMessage(replied.message_id);
+      const rc = findCommentByText((replied.text || replied.caption || "").slice(0, 1500));
+      target = rc ? rc.id : rid && getDraft(rid)?.kind === "comment" ? rid : null;
+    } else {
+      target = latestCancellableId();
+    }
+    if (target) {
+      logEvent(`Мастер: ${text.slice(0, 60)} → отмена комментария #${target}`);
+      const r = await cancelOrOfferDelete(target);
+      if (r) await sendMessage(chatId, r);
+      return;
+    }
+  }
   if (replied && !text.startsWith("/")) {
     const draftId = findDraftByCardMessage(replied.message_id);
     // Вопрос к карточке («актуален?», «?») — это не правка, отдаём Рафаэлю с контекстом.

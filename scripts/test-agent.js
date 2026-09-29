@@ -11,7 +11,7 @@ process.env.DRY_RUN = "true";
 const tmpState = path.join(os.tmpdir(), `agent-test-state-${Date.now()}.json`);
 process.env.STATE_PATH = tmpState;
 
-const { parseFilter, parseWriter, postPassesHeuristics, channelMetrics, channelQualifies, scoreChannel } = await import("../src/comments.js");
+const { parseFilter, parseWriter, postPassesHeuristics, channelMetrics, channelQualifies, scoreChannel, isCancelText, dictatedText, bansFromInstruction, banViolations } = await import("../src/comments.js");
 const { redditPostPasses } = await import("../src/reddit.js");
 const { tashkentNow, shouldFire, TASKS, taskDueToday } = await import("../src/planner.js");
 const { strategiesFor, readStrategy, addStrategyNote, removeStrategyNote, strategiesBlock } = await import("../src/strategies.js");
@@ -38,6 +38,18 @@ check("writer префикс", parseWriter("Комментарий: текст")
 const now = Date.now();
 const good = { text: "x".repeat(120) + " как вы принимаете заказы в телеграм?", date: now - 30 * 60_000, hasComments: true };
 check("пост ок", postPassesHeuristics(good, now).ok);
+// Отмена и буквальные правки
+for (const t of ["Бро отмен", "отмена", "ОТМЕНИ ОТПРАВКУ", "стоп", "не отправляй", "бро, отмени"]) check(`отмена: ${t}`, isCancelText(t));
+for (const t of ["сделай короче", "стопроцентно норм", "убери легенду", "отменный пост, похвали"]) check(`не отмена: ${t}`, !isCancelText(t));
+check("диктовка в кавычках", dictatedText('просто напиши "гуд айдия бро, попробую тоже"') === "гуд айдия бро, попробую тоже");
+check("диктовка «»", dictatedText("скажи: «имба, попробую»") === "имба, попробую");
+check("не диктовка", dictatedText("просто похвали его") === null);
+const b1 = bansFromInstruction("без слова легенда и не упоминай свои проекты");
+check("бан слова", b1.words.includes("легенда") && b1.noProjects);
+check("бан ловит форму", banViolations("ты просто легенду сделал", b1).includes("легенда"));
+check("бан проекты", banViolations("я в Noor делал так же", b1).length === 1);
+check("чистый текст", banViolations("гуд айдия бро, попробую тоже", b1).length === 0);
+check("стоп-слова не баним", bansFromInstruction("без воды и без длинных тире").words.length === 0);
 check("пост старый", !postPassesHeuristics({ ...good, date: now - 5 * 3_600_000 }, now).ok);
 check("пост короткий", !postPassesHeuristics({ ...good, text: "коротко" }, now).ok);
 check("пост без комментов", !postPassesHeuristics({ ...good, hasComments: false }, now).ok);

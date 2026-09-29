@@ -262,7 +262,20 @@ export async function sendComment({ username, postId, text, asChannel, canJoin, 
     link: commentId ? `https://t.me/${username}/${postId}?comment=${commentId}` : `https://t.me/${username}/${postId}`,
     sentAs: sendAs ? "channel" : "me",
     joined,
+    commentId,
   };
+}
+
+// Удалить свой отправленный комментарий (только из кнопки владельца!).
+// Обсуждение находим заново по посту — id группы между перезапусками не храним.
+export async function deleteComment({ username, postId, commentId }) {
+  if (!commentId) throw new Error("не знаю id комментария — удали вручную по ссылке");
+  const disc = await safe(() => client.invoke(new Api.messages.GetDiscussionMessage({ peer: username, msgId: postId })));
+  const dmsg = disc.messages?.[0];
+  if (!dmsg) throw new Error("обсуждение поста не найдено");
+  const discPeer = await safe(() => client.getInputEntity(dmsg.peerId));
+  await safe(() => client.invoke(new Api.channels.DeleteMessages({ channel: discPeer, id: [Number(commentId)] })));
+  return true;
 }
 
 export function postLink(username, postId) {

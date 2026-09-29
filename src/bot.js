@@ -87,7 +87,7 @@ import {
 import { runRedditDigest, handleRedditCallback, applyRedditRewrite } from "./reddit.js";
 import { plannerTick, handlePlanCallback, morningBriefText } from "./planner.js";
 import { applyDraftRewrite, clientRulesText, clientCardText, clientButtons, postButtons } from "./rewrite.js";
-import { localRoute, logEvent, LOCAL_ACK, memoryForAgents, findCommentByText } from "./team.js";
+import { localRoute, logEvent, LOCAL_ACK, memoryForAgents, findCommentByText, botStateText } from "./team.js";
 import { setMemoryProvider, getWatch } from "./comments.js";
 import { setPlannerMemoryProvider } from "./planner.js";
 import { parseTelegramExport } from "./importer.js";
@@ -932,6 +932,10 @@ async function runRaphaelAction(chatId, { name, arg = "" }) {
         return arg && handleModelCommand(chatId, `/model ${arg}`);
       case "day_start":
         return handleDayCommand(chatId, "/day");
+      case "memory_list":
+        return handleMemoryCommand(chatId, "/memory");
+      case "status":
+        return sendMessage(chatId, `Состояние бота, Мастер:\n${botStateText(chatId)}`);
       case "comment_cancel":
       case "comment_delete": {
         // Удаление — только кнопкой Мастера: здесь максимум присылаем кнопку.
@@ -993,13 +997,13 @@ async function handleModelCommand(chatId, text) {
     const roleBtns = Object.keys(ROLES).map((r) => cmdBtn(`${r}: ${getEffort(r)}`, `/model ${r}`));
     await sendMessageWithButtons(chatId, `${modelsText()}\n\nНажми на роль, чтобы поменять effort.`, [
       ...grid(roleBtns, 2),
-      [cmdBtn("Все сразу", "/model all"), cmdBtn("↩️ Везде low", "/model reset")],
+      [cmdBtn("Все сразу", "/model all"), cmdBtn("↩️ По умолчанию", "/model reset")],
     ]);
     return;
   }
   if (args[0] === "reset") {
     resetEfforts();
-    await sendMessage(chatId, `Вернул effort по умолчанию везде.\n\n${modelsText()}`);
+    await sendMessage(chatId, `Вернул effort по умолчанию.\n\n${modelsText()}`);
     return;
   }
   const [role, effort] = args;
@@ -1132,10 +1136,19 @@ async function handleRedditCommand(chatId) {
   await sendMessage(chatId, started ? "Смотрю Reddit…" : "Уже смотрю.");
 }
 
+function isQuestionText(text) {
+  const t = text.trim();
+  return /\?\s*$/.test(t) || /^(почему|зачем|что|как|какой|какая|актуал|уверен|норм|а если|а почему|разве)(\s|$|,)/i.test(t);
+}
+
+const DRAFT_KIND_LABEL = { business: "ответ клиенту", channel_post: "пост в канал", comment: "комментарий в Telegram", reddit: "ответ на Reddit" };
+
 // Правка черновика комментария/ответа после кнопки ✏️. -> true если сообщение ушло туда.
 async function consumePendingRewrite(chatId, text) {
   const pending = getAgentValue("pendingRewrite", null);
   if (!pending || text.startsWith("/") || Date.now() - pending.ts > 15 * 60_000) return false;
+  // Вопрос («почему так?», «а это норм?») — не правка: отдаём Рафаэлю, слот не трогаем.
+  if (isQuestionText(text) && !isCancelText(text)) return false;
   setAgentValue("pendingRewrite", null);
   const stopTyping = keepTyping(chatId);
   try {
@@ -1229,7 +1242,7 @@ async function handlePersonalMessage(msg) {
   if (replied && !text.startsWith("/")) {
     const draftId = findDraftByCardMessage(replied.message_id);
     // Вопрос к карточке («актуален?», «?») — это не правка, отдаём Рафаэлю с контекстом.
-    const isQuestion = /\?\s*$/.test(text) || /^(почему|зачем|что|как|актуал|уверен|норм)/i.test(text.trim());
+    const isQuestion = isQuestionText(text);
     if (draftId && !isQuestion) {
       const stopTyping = keepTyping(chatId);
       try {
@@ -1241,9 +1254,12 @@ async function handlePersonalMessage(msg) {
     const quoted = (replied.text || replied.caption || "").slice(0, 1500);
     const fromBot = Boolean(replied.from?.is_bot);
     const comment = findCommentByText(quoted);
+    const card = draftId ? getDraft(draftId) : null;
     const ctx = comment
       ? `[Мастер отвечает на карточку комментария #${comment.id} (@${comment.username}, ${comment.status}). Пост: «${(comment.postText || "").slice(0, 600)}» Комментарий: «${comment.text}»]`
-      : quoted
+      : card
+        ? `[Мастер отвечает на карточку черновика #${draftId} (${DRAFT_KIND_LABEL[card.kind] || card.kind}${card.customerText ? `; клиент написал: «${card.customerText.slice(0, 500)}»` : ""}). Текст черновика: «${(card.text || "").slice(0, 1200)}». Переписать — [[REWRITE: ${draftId} | …]].]`
+        : quoted
         ? `[Мастер отвечает на ${fromBot ? "сообщение бота" : "своё сообщение"}:\n«${quoted}»]`
         : "";
     if (ctx) text = `${ctx}\n\n${text}`;

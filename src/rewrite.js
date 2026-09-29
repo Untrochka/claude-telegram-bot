@@ -158,7 +158,7 @@ export function recentDraftsText(drafts) {
   return drafts
     .map((d) => {
       const who = d.kind === "business" ? ` (${getChatMeta(d.chatId).title || `чат ${d.chatId}`})` : d.kind === "comment" ? ` (@${d.username})` : "";
-      return `- #${d.id} ${kind[d.kind]}${who}: ${d.text.replace(/\s+/g, " ").slice(0, 200)}`;
+      return `- #${d.id} ${kind[d.kind]}${who}: ${d.text.replace(/\s+/g, " ").slice(0, 500)}`;
     })
     .join("\n");
 }

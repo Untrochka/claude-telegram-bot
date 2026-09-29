@@ -33,7 +33,7 @@ function fmt(ts) {
 export function eventsText(limit = 8) {
   const notes = getBotNotes().slice(-limit);
   if (!notes.length) return "(пока пусто)";
-  return notes.map((n) => `[${fmt(n.ts)}] ${n.text.replace(/\s+/g, " ").slice(0, 260)}`).join("\n");
+  return notes.map((n) => `[${fmt(n.ts)}] ${n.text.replace(/\s+/g, " ").slice(0, 180)}`).join("\n");
 }
 
 export function botStateText(ownerChatId) {
@@ -84,6 +84,24 @@ export function localRoute(text) {
     const unit = u.startsWith("м") ? "m" : u.startsWith("ч") ? "h" : "d";
     return { action: "remind", arg: `${n}${unit} ${remind[4].replace(/^(что|о том что|про)\s+/i, "").trim()}` };
   }
+
+  // Включить/выключить без Claude.
+  const on = /^(включи|вруби|запусти)\s/i.test(low);
+  const off = /^(выключи|отключи|выруби|останови|стоп)\s/i.test(low);
+  if ((on || off) && /автоответ/i.test(low)) return { action: on ? "auto_on" : "auto_off", arg: "" };
+  if ((on || off) && /(коммент|агент)/i.test(low)) return { action: on ? "comments_on" : "comments_off", arg: "" };
+
+  const done = low.match(/^(закрой|закрыть|выполнил[аи]?|сделал[аи]?|готово)\s+(задач[уа]\s+)?#?(\d+)$/i);
+  if (done) return { action: "todo_done", arg: done[3] };
+
+  const addTask = t.match(/^(добавь задачу|новая задача|задача)[:\s]+(.{3,})$/i);
+  if (addTask) return { action: "todo_add", arg: addTask[2].trim() };
+
+  const addCh = t.match(/^(добавь|следи за)\s+(канал\s+)?(@[\w\d_]{4,}|https?:\/\/t\.me\/[\w\d_]{4,})\s*$/i);
+  if (addCh) return { action: "watch_add", arg: addCh[3] };
+
+  if (/^(что (ты )?(помнишь|в памяти)|память|покажи память)\??$/i.test(low)) return { action: "memory_list", arg: "" };
+  if (/^(статус|что с ботом|как дела у бота|что сейчас)\??$/i.test(low)) return { action: "status", arg: "" };
 
   // \b в JS не работает с кириллицей — границы слов через пробелы.
   if (/^(найди|поищи|ищи|добавь|подбери)(\s.{0,25})?\s?канал/i.test(low) && !/(^|\s)(как|почему|зачем)(\s|$)/.test(low)) return { action: "watch_find", arg: "" };

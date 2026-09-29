@@ -97,9 +97,19 @@ function childEnv() {
 // Telegram). Финальный текст всё равно берётся из события result.
 // Старый CLI на сервере может не знать --effort — тогда запоминаем и больше не передаём.
 let cliSupportsEffort = true;
+// Экономия лимитов: наш промпт ЗАМЕНЯЕТ стандартный промпт Claude Code
+// (--system-prompt-file), а --tools оставляет только нужные инструменты —
+// описания Bash/Edit/Read и прочих больше не отправляются. Замер: «скажи ок»
+// 37k → 13k входных токенов. Старый CLI без этих флагов — откат на прежние.
+let cliLean = true;
 
 function runClaudeCli(opts) {
   return runClaudeCliOnce(opts).catch((err) => {
+    if (cliLean && /unknown option|error: option/i.test(err.message) && /--tools|system-prompt-file/i.test(err.message)) {
+      cliLean = false;
+      console.warn("[claude] CLI не знает --tools/--system-prompt-file — обнови claude на сервере. Пока работаю по-старому.");
+      return runClaudeCli(opts);
+    }
     if (cliSupportsEffort && /effort/i.test(err.message) && /unknown option|invalid|error: option/i.test(err.message)) {
       cliSupportsEffort = false;
       console.warn("[claude] CLI не знает --effort — обнови claude на сервере. Пока работаю без него.");
@@ -124,8 +134,9 @@ function runClaudeCliOnce({ prompt, systemFile, images = [], model, resumeId, we
       "claude",
       [
         "-p",
-        "--append-system-prompt-file",
+        cliLean ? "--system-prompt-file" : "--append-system-prompt-file",
         systemFile,
+        ...(cliLean ? ["--tools", webTools ? WEB_TOOLS : ""] : []),
         "--allowedTools",
         webTools ? WEB_TOOLS : "",
         "--permission-mode",

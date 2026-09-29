@@ -1,5 +1,5 @@
 // Модель у бота одна — Opus 5.5 (решение Азиза). По ролям меняется только
-// effort (сколько модель думает): по умолчанию low везде, поверх — выбор
+// effort (сколько модель думает): по умолчанию low, Рафаэль и писатель — medium; поверх — выбор
 // владельца через /model, хранится в state.json и переживает деплой.
 import { config } from "./config.js";
 import { getAgentValue, setAgentValue } from "./state.js";
@@ -19,9 +19,17 @@ export function getModel() {
   return MODEL;
 }
 
+// Там, где важно внимательно слушать Мастера (Рафаэль, правки комментов), —
+// medium: чуть дороже за вызов, но меньше переделок. Остальное — low.
+const ROLE_DEFAULTS = { raphael: "medium", writer: "medium" };
+
+export function defaultEffort(role) {
+  return process.env.BOT_CLAUDE_EFFORT ? config.claudeEffort : ROLE_DEFAULTS[role] || config.claudeEffort;
+}
+
 export function getEffort(role) {
   const overrides = getAgentValue("effort", {});
-  return overrides[role] || config.claudeEffort;
+  return overrides[role] || defaultEffort(role);
 }
 
 export function setEffort(role, effort) {
@@ -47,7 +55,7 @@ export function modelsText() {
     "",
     `Сменить: /model <роль> <${EFFORTS.join("|")}>`,
     "Например: /model writer high",
-    "Везде сразу: /model all medium · Вернуть low везде: /model reset",
+    "Везде сразу: /model all medium · По умолчанию: /model reset (Рафаэль и писатель — medium, остальные — low)",
     "low — быстро и дёшево, high/xhigh — думает дольше и аккуратнее, max — максимум (медленно).",
   ].join("\n");
 }

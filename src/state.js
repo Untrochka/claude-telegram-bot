@@ -436,7 +436,7 @@ export function addBotNote(text) {
   const a = agent();
   a.botNotes = a.botNotes || [];
   a.botNotes.push({ text: text.slice(0, 500), ts: Date.now() });
-  if (a.botNotes.length > 12) a.botNotes.splice(0, a.botNotes.length - 12);
+  if (a.botNotes.length > 40) a.botNotes.splice(0, a.botNotes.length - 40);
   saveState(state);
 }
 

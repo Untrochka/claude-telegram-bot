@@ -97,12 +97,12 @@ check("блок стратегий не пустой", strategiesBlock(["overvie
 
 // Модели
 check("модель везде opus 5.5", getModel("filter") === "claude-opus-5-5" && getModel("raphael") === "claude-opus-5-5");
-check("effort по умолчанию low", getEffort("writer") === "low");
+check("effort по умолчанию: filter low, raphael/writer medium", getEffort("filter") === "low" && getEffort("raphael") === "medium" && getEffort("writer") === "medium");
 setEffort("writer", "high");
-check("effort writer high", getEffort("writer") === "high" && getEffort("raphael") === "low");
+check("effort writer high", getEffort("writer") === "high" && getEffort("filter") === "low");
 check("кривой effort не ставится", setEffort("writer", "ultra") === false);
 resetEfforts();
-check("reset effort", getEffort("writer") === "low");
+check("reset effort", getEffort("writer") === "medium");
 
 // Стрим Рафаэля: служебные строки скрыты
 check("стрим скрывает [[CHAT", visibleRaphaelText("[[CHAT: Бахтиёр]]") === null);
@@ -112,6 +112,12 @@ check("стрим маркер с одной ]", visibleRaphaelText("Приня�
 check("стрим прячет REWRITE", visibleRaphaelText("Сейчас переделаю\n[[REWRITE: 41 | короче]]") === "Сейчас переделаю");
 
 // Локальный роутер (без Claude)
+check("роутер: выключи автоответы", localRoute("выключи автоответы")?.action === "auto_off");
+check("роутер: включи комменты", localRoute("включи комментарии")?.action === "comments_on");
+check("роутер: закрой задачу 3", localRoute("закрой задачу 3")?.arg === "3");
+check("роутер: добавь @канал", localRoute("добавь @durov_channel")?.action === "watch_add");
+check("роутер: память", localRoute("что помнишь?")?.action === "memory_list");
+check("стоп автоответы — не отмена коммента", !isCancelText("стоп автоответы"));
 check("роутер: план", localRoute("план на сегодня")?.action === "plan");
 check("роутер: найди каналы", localRoute("найди ещё каналов")?.action === "watch_find");
 check("роутер: напомни", localRoute("напомни через 2 часа написать Алине")?.arg === "2h написать Алине");

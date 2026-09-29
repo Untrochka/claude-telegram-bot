@@ -1,10 +1,11 @@
-// Какая модель Claude работает в какой роли. Дефолты — из .env (config),
-// поверх — выбор владельца через /model, хранится в state.json и переживает
-// деплой. На подписке доступность opus зависит от тарифа.
+// Модель у бота одна — Opus 5.5 (решение Азиза). По ролям меняется только
+// effort (сколько модель думает): по умолчанию low везде, поверх — выбор
+// владельца через /model, хранится в state.json и переживает деплой.
 import { config } from "./config.js";
 import { getAgentValue, setAgentValue } from "./state.js";
 
-export const MODEL_CHOICES = ["haiku", "sonnet", "opus"];
+export const MODEL = config.claudeModel;
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
 export const ROLES = {
   raphael: "Рафаэль (личный чат)",
@@ -14,46 +15,39 @@ export const ROLES = {
   writer: "Писатель комментариев и адаптаций постов",
 };
 
-function defaults() {
-  return {
-    raphael: config.claudeModelSmart,
-    day: config.claudeModelSmart,
-    clients: config.claudeModelFast,
-    filter: config.claudeModelFilter,
-    writer: config.claudeModelSmart,
-  };
+export function getModel() {
+  return MODEL;
 }
 
-export function getModel(role) {
-  const overrides = getAgentValue("models", {});
-  return overrides[role] || defaults()[role] || config.claudeModelSmart;
+export function getEffort(role) {
+  const overrides = getAgentValue("effort", {});
+  return overrides[role] || config.claudeEffort;
 }
 
-export function setModel(role, model) {
-  if (!ROLES[role] || !MODEL_CHOICES.includes(model)) return false;
-  const overrides = { ...getAgentValue("models", {}) };
-  overrides[role] = model;
-  setAgentValue("models", overrides);
+export function setEffort(role, effort) {
+  if (!ROLES[role] || !EFFORTS.includes(effort)) return false;
+  setAgentValue("effort", { ...getAgentValue("effort", {}), [role]: effort });
   return true;
 }
 
-export function resetModels() {
-  setAgentValue("models", {});
+export function resetEfforts() {
+  setAgentValue("effort", {});
 }
 
 export function modelsText() {
-  const overrides = getAgentValue("models", {});
+  const overrides = getAgentValue("effort", {});
   const lines = Object.entries(ROLES).map(([role, label]) => {
     const mark = overrides[role] ? "" : " (по умолчанию)";
-    return `• ${role} — ${getModel(role)}${mark}\n   ${label}`;
+    return `• ${role} — ${getEffort(role)}${mark}\n   ${label}`;
   });
   return [
-    "Модели по ролям:",
+    `Модель везде: ${MODEL}`,
+    "Effort по ролям:",
     ...lines,
     "",
-    "Сменить: /model <роль> <haiku|sonnet|opus>",
-    "Например: /model raphael opus",
-    "Все по умолчанию: /model reset",
-    "haiku — самый быстрый, sonnet — баланс, opus — самый умный (если есть в подписке).",
+    `Сменить: /model <роль> <${EFFORTS.join("|")}>`,
+    "Например: /model writer high",
+    "Везде сразу: /model all medium · Вернуть low везде: /model reset",
+    "low — быстро и дёшево, high/xhigh — думает дольше и аккуратнее, max — максимум (медленно).",
   ].join("\n");
 }

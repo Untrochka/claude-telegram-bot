@@ -17,7 +17,7 @@ import {
   listRecentDrafts,
   listMemory,
 } from "./state.js";
-import { ROLES, getModel } from "./models.js";
+import { ROLES, getModel, getEffort } from "./models.js";
 import { getWatch, commentsActive, getCommentHistory } from "./comments.js";
 import { isMtprotoReady } from "./mtproto.js";
 import { TASKS, taskDueToday, tashkentNow } from "./planner.js";
@@ -39,7 +39,7 @@ export function eventsText(limit = 8) {
 export function botStateText(ownerChatId) {
   const autoOverride = getAutoSendToggle();
   const autoOn = autoOverride === undefined || autoOverride === null ? config.autoSendEnabled : autoOverride;
-  const models = Object.keys(ROLES).map((r) => `${r}=${getModel(r)}`).join(", ");
+  const models = `${getModel()}, effort: ${Object.keys(ROLES).map((r) => `${r}=${getEffort(r)}`).join(", ")}`;
   const watch = Object.entries(getWatch());
   const now = tashkentNow();
   const today = TASKS.filter((t) => !["brief", "weekly", "discovery_report"].includes(t.key) && taskDueToday(t, now));

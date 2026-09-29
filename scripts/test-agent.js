@@ -15,7 +15,7 @@ const { parseFilter, parseWriter, postPassesHeuristics, channelMetrics, channelQ
 const { redditPostPasses } = await import("../src/reddit.js");
 const { tashkentNow, shouldFire, TASKS, taskDueToday } = await import("../src/planner.js");
 const { strategiesFor, readStrategy, addStrategyNote, removeStrategyNote, strategiesBlock } = await import("../src/strategies.js");
-const { getModel, setModel, resetModels } = await import("../src/models.js");
+const { getModel, getEffort, setEffort, resetEfforts } = await import("../src/models.js");
 const { visibleRaphaelText } = await import("../src/raphael.js");
 const { localRoute } = await import("../src/team.js");
 
@@ -96,12 +96,13 @@ check("правка удаляется", removeStrategyNote("contra", 0) && !rea
 check("блок стратегий не пустой", strategiesBlock(["overview", "schedule"]).length > 500);
 
 // Модели
-check("модель по умолчанию filter=haiku", getModel("filter") === "haiku");
-setModel("raphael", "opus");
-check("override raphael", getModel("raphael") === "opus");
-check("кривая модель не ставится", setModel("raphael", "gpt") === false);
-resetModels();
-check("reset", getModel("raphael") !== "opus" || process.env.CLAUDE_MODEL_SMART === "opus");
+check("модель везде opus 5.5", getModel("filter") === "claude-opus-5-5" && getModel("raphael") === "claude-opus-5-5");
+check("effort по умолчанию low", getEffort("writer") === "low");
+setEffort("writer", "high");
+check("effort writer high", getEffort("writer") === "high" && getEffort("raphael") === "low");
+check("кривой effort не ставится", setEffort("writer", "ultra") === false);
+resetEfforts();
+check("reset effort", getEffort("writer") === "low");
 
 // Стрим Рафаэля: служебные строки скрыты
 check("стрим скрывает [[CHAT", visibleRaphaelText("[[CHAT: Бахтиёр]]") === null);
@@ -122,7 +123,7 @@ check("роутер: вопрос про каналы -> Рафаэль", localR
 
 if (process.argv.includes("--live")) {
   const { askRaphael } = await import("../src/claudeClient.js");
-  setModel("raphael", "haiku");
+  
   let deltas = 0;
   const started = Date.now();
   let firstAt = null;

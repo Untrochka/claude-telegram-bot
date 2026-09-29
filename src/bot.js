@@ -66,7 +66,7 @@ import {
 import { generateReply } from "./claudeClient.js";
 import { raphaelTurn, resetRaphael, contentTurn, memoryText, visibleRaphaelText } from "./raphael.js";
 import { createStreamer } from "./stream.js";
-import { modelsText, setModel, resetModels, ROLES, MODEL_CHOICES } from "./models.js";
+import { modelsText, setEffort, resetEfforts, ROLES, EFFORTS } from "./models.js";
 import { STRATEGIES, readStrategy, strategiesListText, addStrategyNote, removeStrategyNote } from "./strategies.js";
 import { startMtproto, isMtprotoReady } from "./mtproto.js";
 import {
@@ -943,22 +943,22 @@ async function handleModelCommand(chatId, text) {
     return;
   }
   if (args[0] === "reset") {
-    resetModels();
-    await sendMessage(chatId, `Вернул модели по умолчанию.\n\n${modelsText()}`);
+    resetEfforts();
+    await sendMessage(chatId, `Вернул effort по умолчанию везде.\n\n${modelsText()}`);
     return;
   }
-  const [role, model] = args;
-  if (role === "all" && MODEL_CHOICES.includes(model)) {
-    for (const r of Object.keys(ROLES)) if (r !== "filter") setModel(r, model);
-    await sendMessage(chatId, `Поставил ${model} везде, кроме фильтра.\n\n${modelsText()}`);
+  const [role, effort] = args;
+  if (role === "all" && EFFORTS.includes(effort)) {
+    for (const r of Object.keys(ROLES)) setEffort(r, effort);
+    await sendMessage(chatId, `Поставил effort ${effort} везде.\n\n${modelsText()}`);
     return;
   }
-  if (!ROLES[role] || !MODEL_CHOICES.includes(model)) {
-    await sendMessage(chatId, `Не понял. Роли: ${Object.keys(ROLES).join(", ")} (или all). Модели: ${MODEL_CHOICES.join(", ")}.\nПример: /model raphael opus`);
+  if (!ROLES[role] || !EFFORTS.includes(effort)) {
+    await sendMessage(chatId, `Не понял. Роли: ${Object.keys(ROLES).join(", ")} (или all). Effort: ${EFFORTS.join(", ")}.\nПример: /model writer high`);
     return;
   }
-  setModel(role, model);
-  await sendMessage(chatId, `Ок: ${role} → ${model}.`);
+  setEffort(role, effort);
+  await sendMessage(chatId, `Ок: ${role} → effort ${effort}.`);
 }
 
 async function handleStrategyCommand(chatId, text) {

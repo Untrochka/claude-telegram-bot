@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { config } from "./config.js";
-import { getModel } from "./models.js";
+import { getModel, getEffort, ROLES } from "./models.js";
 
 // Пустая песочница вместо папки проекта: даже если что-то из read-only
 // набора инструментов сработает в обход --allowedTools "", там физически
@@ -95,8 +95,16 @@ function childEnv() {
 // onDelta(text) — если передан, ответ стримится: вызывается с накопленным
 // текстом текущего сообщения модели по мере генерации (для «печатает» в
 // Telegram). Финальный текст всё равно берётся из события result.
+// Старый CLI на сервере может не знать --effort — тогда запоминаем и больше не передаём.
+let cliSupportsEffort = true;
+
 function runClaudeCli(opts) {
   return runClaudeCliOnce(opts).catch((err) => {
+    if (cliSupportsEffort && /effort/i.test(err.message) && /unknown option|invalid|error: option/i.test(err.message)) {
+      cliSupportsEffort = false;
+      console.warn("[claude] CLI не знает --effort — обнови claude на сервере. Пока работаю без него.");
+      return runClaudeCli(opts);
+    }
     // Старый CLI без --include-partial-messages — повторяем без стриминга.
     if (opts.onDelta && /include-partial-messages|unknown option/i.test(err.message)) {
       console.warn("[claude] Стриминг не поддерживается этим CLI, отвечаю без него.");
@@ -109,6 +117,7 @@ function runClaudeCli(opts) {
 function runClaudeCliOnce({ prompt, systemFile, images = [], model, resumeId, webTools = false, timeoutMs = 60_000, onDelta = null, role = "?" }) {
   const withImages = images.length > 0;
   const streamOut = withImages || Boolean(onDelta);
+  const effort = cliSupportsEffort && ROLES[role] ? getEffort(role) : null;
   const startedAt = Date.now();
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -122,6 +131,7 @@ function runClaudeCliOnce({ prompt, systemFile, images = [], model, resumeId, we
         "--permission-mode",
         "dontAsk",
         ...(model ? ["--model", model] : []),
+        ...(effort ? ["--effort", effort] : []),
         ...(resumeId ? ["--resume", resumeId] : []),
         ...(withImages ? ["--input-format", "stream-json"] : []),
         ...(streamOut ? ["--output-format", "stream-json", "--verbose"] : ["--output-format", "json"]),
@@ -191,7 +201,7 @@ function runClaudeCliOnce({ prompt, systemFile, images = [], model, resumeId, we
     child.on("close", (code) => {
       clearTimeout(timeout);
       const secs = ((Date.now() - startedAt) / 1000).toFixed(1);
-      console.log(`[claude] role=${role} model=${model || "default"} ${secs}s prompt=${String(prompt).length} симв.${resumeId ? " resume" : ""}${onDelta ? " stream" : ""}`);
+      console.log(`[claude] role=${role} model=${model || "default"} effort=${effort || "-"} ${secs}s prompt=${String(prompt).length} симв.${resumeId ? " resume" : ""}${onDelta ? " stream" : ""}`);
       if (code !== 0) {
         reject(new Error(`claude -p завершился с кодом ${code}: ${stderr || stdout.slice(-1000)}`));
         return;
@@ -257,15 +267,26 @@ async function getAnthropicClient() {
   return anthropicClientPromise;
 }
 
-async function callViaApi(prompt, systemText, maxTokens, images = []) {
+let apiSupportsEffort = true;
+
+async function callViaApi(prompt, systemText, maxTokens, images = [], role = "clients") {
   const client = await getAnthropicClient();
   const content = images.length ? [...imageBlocks(images), { type: "text", text: prompt }] : prompt;
-  const msg = await client.messages.create({
-    model: config.anthropicModel,
+  const body = {
+    model: getModel(role),
     max_tokens: maxTokens,
     system: systemText,
     messages: [{ role: "user", content }],
-  });
+  };
+  let msg;
+  try {
+    msg = await client.messages.create(apiSupportsEffort ? { ...body, output_config: { effort: getEffort(role) } } : body);
+  } catch (err) {
+    if (!apiSupportsEffort || !/effort|output_config/i.test(err.message || "")) throw err;
+    apiSupportsEffort = false;
+    console.warn("[claude] API не принял effort — работаю без него.");
+    msg = await client.messages.create(body);
+  }
   const text = msg.content.find((b) => b.type === "text")?.text || "";
   return text.trim();
 }
@@ -331,7 +352,7 @@ export function parseTriagedReply(raw) {
 
 function callClaude(prompt, personaPath, maxTokens, images = []) {
   return config.claudeMode === "api"
-    ? callViaApi(prompt, fs.readFileSync(personaPath, "utf8"), maxTokens, images)
+    ? callViaApi(prompt, fs.readFileSync(personaPath, "utf8"), maxTokens, images, "clients")
     : callViaSubscription(prompt, personaPath, images);
 }
 
@@ -347,7 +368,7 @@ export async function generateReply(history, incomingText, images = [], ctx = {}
 // -> { text, sessionId }
 export async function askRaphael({ prompt, images = [], sessionId, systemText, fallbackPrompt, onDelta = null }) {
   if (config.claudeMode === "api") {
-    return { text: await callViaApi(fallbackPrompt || prompt, systemText, 2000, images), sessionId: null };
+    return { text: await callViaApi(fallbackPrompt || prompt, systemText, 2000, images, "raphael"), sessionId: null };
   }
   return runSession({
     prompt,
@@ -389,7 +410,7 @@ export async function generateContentReply(history, incomingText, images = [], s
   const prompt = buildSecretaryPrompt(history, incomingText);
   const raw =
     config.claudeMode === "api"
-      ? await callViaApi(prompt, systemText || fs.readFileSync(config.contentPersonaPath, "utf8"), 1500, images)
+      ? await callViaApi(prompt, systemText || fs.readFileSync(config.contentPersonaPath, "utf8"), 1500, images, "day")
       : (
           await runClaudeCli({
             prompt,
@@ -425,7 +446,7 @@ export async function continueContentSession({ prompt, images = [], sessionId, s
 // инструментов (--allowedTools ""), cwd — пустая песочница.
 let oneShotCounter = 0;
 export async function runOneShot({ role, system, prompt, timeoutMs = 90_000, maxTokens = 800 }) {
-  if (config.claudeMode === "api") return callViaApi(prompt, system, maxTokens);
+  if (config.claudeMode === "api") return callViaApi(prompt, system, maxTokens, [], role);
   const { text } = await runClaudeCli({
     prompt,
     systemFile: writeSystemFile(`oneshot-${role}-${(oneShotCounter = (oneShotCounter + 1) % 20)}`, system),

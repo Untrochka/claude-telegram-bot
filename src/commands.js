@@ -20,7 +20,7 @@ export const MENU_COMMANDS = [
   { command: "watch", description: "Каналы для комментариев" },
   { command: "reddit", description: "Найти вопросы на Reddit сейчас" },
   { command: "strategy", description: "Стратегии и правки к ним" },
-  { command: "model", description: "Модели Claude по ролям" },
+  { command: "model", description: "Opus 5.5: effort по ролям" },
 ];
 
 // Группы для /help и /start — ровно в этом порядке.
@@ -183,9 +183,9 @@ export const HELP_GROUPS = [
       },
       {
         kind: "command",
-        usage: "/model, /model <роль> <haiku|sonnet|opus>",
-        text: "какая модель в какой роли (raphael, day, clients, filter, writer). haiku — быстрый, opus — самый умный.",
-        example: "/model raphael opus",
+        usage: "/model, /model <роль> <low|medium|high|xhigh|max>",
+        text: "модель везде Opus 5.5, меняется только effort по ролям (raphael, day, clients, filter, writer; all — все сразу). По умолчанию low.",
+        example: "/model writer high",
       },
     ],
   },

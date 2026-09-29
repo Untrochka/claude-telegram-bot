@@ -33,7 +33,6 @@ export const config = {
   ownerTelegramId,
   claudeMode: (process.env.CLAUDE_MODE || "subscription").trim(), // "subscription" | "api"
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || "",
-  anthropicModel: process.env.ANTHROPIC_MODEL || "claude-haiku-4-5-20251001",
   // Сколько последних сообщений клиентского чата давать автоответчику в промпт.
   historyLimit: Number(process.env.HISTORY_LIMIT || 10),
   // Сколько сообщений на клиентский чат хранить (для Рафаэля и анализа переписок).
@@ -56,12 +55,11 @@ export const config = {
   // расшифровывается, бот просто сообщает о голосовом, как раньше.
   groqApiKey: (process.env.GROQ_API_KEY || "").trim(),
   groqWhisperModel: (process.env.GROQ_WHISPER_MODEL || "whisper-large-v3").trim(),
-  // Модели для режима subscription (claude --model). На Pro — sonnet; на Max
-  // для Рафаэля и /day можно поставить opus.
-  claudeModelSmart: (process.env.CLAUDE_MODEL_SMART || "sonnet").trim(), // Рафаэль, /day
-  claudeModelFast: (process.env.CLAUDE_MODEL_FAST || "sonnet").trim(), // автоответы клиентам
-  // Быстрая модель для фильтров (подходит ли пост для комментария и т.п.).
-  claudeModelFilter: (process.env.CLAUDE_MODEL_FILTER || "haiku").trim(),
+  // Модель одна на всё — Opus 5.5 (и CLI, и API). Старые CLAUDE_MODEL_SMART/
+  // FAST/FILTER и ANTHROPIC_MODEL больше не читаются.
+  claudeModel: (process.env.BOT_CLAUDE_MODEL || "claude-opus-5-5").trim(),
+  // Effort по умолчанию для всех ролей; по ролям меняется командой /model.
+  claudeEffort: (process.env.BOT_CLAUDE_EFFORT || "low").trim().toLowerCase(),
   // /day выключается сам, если столько времени не было сообщений.
   dayIdleMs: Number(process.env.DAY_IDLE_HOURS || 3) * 3_600_000,
 

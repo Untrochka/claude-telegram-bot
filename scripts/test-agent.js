@@ -16,7 +16,7 @@ const { redditPostPasses } = await import("../src/reddit.js");
 const { tashkentNow, shouldFire, TASKS, taskDueToday } = await import("../src/planner.js");
 const { strategiesFor, readStrategy, addStrategyNote, removeStrategyNote, strategiesBlock } = await import("../src/strategies.js");
 const { getModel, getEffort, setEffort, resetEfforts } = await import("../src/models.js");
-const { visibleRaphaelText } = await import("../src/raphael.js");
+const { visibleRaphaelText, parseChatRequest } = await import("../src/raphael.js");
 const { localRoute } = await import("../src/team.js");
 
 let failed = 0;
@@ -112,6 +112,12 @@ check("стрим маркер с одной ]", visibleRaphaelText("Приня�
 check("стрим прячет REWRITE", visibleRaphaelText("Сейчас переделаю\n[[REWRITE: 41 | короче]]") === "Сейчас переделаю");
 
 // Локальный роутер (без Claude)
+const pc1 = parseChatRequest("Ильяс | с 01.09.2026");
+check("CHAT с датой", pc1.name === "Ильяс" && pc1.sinceTs === new Date("2026-09-01T00:00:00+05:00").getTime());
+check("CHAT с ДД.ММ без года", parseChatRequest("x | 01.09").sinceTs > 0);
+check("CHAT ISO", parseChatRequest("x | 2026-09-01").sinceTs === pc1.sinceTs);
+check("CHAT число", parseChatRequest("@bob | 500").limit === 500 && parseChatRequest("@bob | 500").sinceTs === 0);
+check("CHAT по умолчанию 120", parseChatRequest("Bob").limit === 120);
 check("роутер: выключи автоответы", localRoute("выключи автоответы")?.action === "auto_off");
 check("роутер: включи комменты", localRoute("включи комментарии")?.action === "comments_on");
 check("роутер: закрой задачу 3", localRoute("закрой задачу 3")?.arg === "3");

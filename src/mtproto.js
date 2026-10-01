@@ -144,17 +144,31 @@ function senderName(m, dialog) {
   return name || "Участник";
 }
 
-// Переписка по имени/@username/id -> текст для модели, или список вариантов.
-// -> { transcript } | { options: [..] } | null
-export async function readChatByQuery(query, limit = 120, maxChars = 30_000) {
+// Переписка по имени/@username/id. По умолчанию — последние 120 сообщений;
+// sinceTs — все сообщения начиная с даты (до maxMessages, листаем страницами).
+// -> { header, lines: ["[дата] Кто: текст", …] (старые сверху), count, truncated } | { options: [..] } | null
+export async function readChatByQuery(query, { limit = 120, sinceTs = 0, maxMessages = 4000 } = {}) {
   const found = await findDialogs(query);
   if (!found.length) return null;
   if (found.length > 1 && !found.some((d) => d.title.toLowerCase() === String(query).trim().toLowerCase())) {
     return { options: found.slice(0, 6).map((d) => `${d.title || "без имени"}${d.username ? ` @${d.username}` : ""} (id ${d.id}, ${d.kind})`) };
   }
   const dialog = found.find((d) => d.title.toLowerCase() === String(query).trim().toLowerCase()) || found[0];
-  const msgs = await safe(() => client.getMessages(dialog.entity, { limit }));
-  const lines = [...msgs]
+  const msgs = [];
+  let truncated = false;
+  const cap = sinceTs ? maxMessages : limit;
+  await safe(async () => {
+    // gramjs сам листает по 100 и делает паузы между запросами.
+    for await (const m of client.iterMessages(dialog.entity, { limit: cap + 1, waitTime: 1 })) {
+      if (sinceTs && (m.date || 0) * 1000 < sinceTs) break;
+      if (msgs.length >= cap) {
+        truncated = true;
+        break;
+      }
+      msgs.push(m);
+    }
+  });
+  const lines = msgs
     .reverse()
     .map((m) => {
       const text = (m.message || "").trim() || mediaLabel(m);
@@ -162,10 +176,11 @@ export async function readChatByQuery(query, limit = 120, maxChars = 30_000) {
       return `[${fmtDate(m.date * 1000)}] ${senderName(m, dialog)}: ${text}`;
     })
     .filter(Boolean);
-  let text = lines.join("\n");
-  if (text.length > maxChars) text = `…(начало обрезано)\n${text.slice(-maxChars)}`;
   return {
-    transcript: `Переписка «${dialog.title || "без имени"}» (${dialog.kind}${dialog.username ? `, @${dialog.username}` : ""}), последние сообщения, старые сверху:\n${text || "(пусто)"}`,
+    header: `Переписка «${dialog.title || "без имени"}» (${dialog.kind}${dialog.username ? `, @${dialog.username}` : ""})`,
+    lines,
+    count: lines.length,
+    truncated,
   };
 }
 

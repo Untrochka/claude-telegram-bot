@@ -42,6 +42,10 @@ Telegram-бот-секретарь для фрилансера Азизхона 
 - Синтаксис после правки файла: `node --check src/<файл>.js`.
 - `DRY_RUN=true` в `.env` — ничего не уходит клиентам (ни автоответ, ни ✅), только лог/уведомление владельцу. Использовать при любой ручной проверке.
 
+## Общая система untra
+
+Прайс, знания об Азизе и стратегии площадок собираются из `~/Public/untra` скриптом `python3 build.py --bot <путь к боту>`. Блоки между `UNTRA:BEGIN` и `UNTRA:END` (persona.md, knowledge.md, prices.js) и файлы `src/strategies/{overview,contra,linkedin,reddit,telegram}.md` руками не править: правки делать в untra и пересобирать.
+
 ## Правила кода
 
 - Строго ESM (`import`/`export`), без CommonJS.

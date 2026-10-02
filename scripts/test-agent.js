@@ -117,6 +117,7 @@ check("CHAT с датой", pc1.name === "Ильяс" && pc1.sinceTs === new Dat
 check("CHAT с ДД.ММ без года", parseChatRequest("x | 01.09").sinceTs > 0);
 check("CHAT ISO", parseChatRequest("x | 2026-09-01").sinceTs === pc1.sinceTs);
 check("CHAT число", parseChatRequest("@bob | 500").limit === 500 && parseChatRequest("@bob | 500").sinceTs === 0);
+check("CHAT весь чат", parseChatRequest("ада | всё").sinceTs === 1 && parseChatRequest("ада | полностью").sinceTs === 1);
 check("CHAT по умолчанию 120", parseChatRequest("Bob").limit === 120);
 check("роутер: выключи автоответы", localRoute("выключи автоответы")?.action === "auto_off");
 check("роутер: включи комменты", localRoute("включи комментарии")?.action === "comments_on");

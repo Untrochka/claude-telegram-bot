@@ -1,3 +1,4 @@
+import { crmStatus, crmWarm } from "./untra/store.js";
 // Рафаэль и бот — одна команда. Здесь:
 // - botStateText(): короткая сводка состояния бота для системного промпта Рафаэля
 //   (что включено, модели, лимиты, план на сегодня, задачи, черновики);
@@ -36,6 +37,18 @@ export function eventsText(limit = 8) {
   return notes.map((n) => `[${fmt(n.ts)}] ${n.text.replace(/\s+/g, " ").slice(0, 180)}`).join("\n");
 }
 
+// CRM из системы untra (data/crm.json): рассылка за сегодня и кто ждёт ответа/действия.
+function crmStateText() {
+  try {
+    const st = crmStatus();
+    const warm = crmWarm();
+    const list = warm.slice(0, 12).map((l) => `${l.id} ${l.business || l.contact} — ${l.status}${l.next_date ? ` (шаг ${l.next_date})` : ""}`).join("; ");
+    return `CRM: сегодня первых сообщений ${st.first_messages}/${st.target}, напоминаний ${st.reminders}. Тёплые и с наступившим шагом (${warm.length}): ${list || "нет"}.`;
+  } catch {
+    return "CRM: недоступна.";
+  }
+}
+
 export function botStateText(ownerChatId) {
   const autoOverride = getAutoSendToggle();
   const autoOn = autoOverride === undefined || autoOverride === null ? config.autoSendEnabled : autoOverride;
@@ -60,6 +73,7 @@ export function botStateText(ownerChatId) {
     `Черновики ждут решения: ${drafts.length ? Object.entries(byKind).map(([k, n]) => `${kindLabel[k] || k} ${n}`).join(", ") : "нет"}.`,
     `Открытые задачи (${tasks.length}): ${tasks.slice(0, 5).map((t) => `#${t.id} ${t.text.slice(0, 60)}`).join("; ") || "нет"}.`,
     `Фактов в памяти: ${listMemory().length}.`,
+    crmStateText(),
   ].join("\n");
 }
 

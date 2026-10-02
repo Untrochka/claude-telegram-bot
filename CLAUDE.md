@@ -44,7 +44,7 @@ Telegram-бот-секретарь для фрилансера Азизхона 
 
 ## Общая система untra
 
-Прайс, знания об Азизе и стратегии площадок собираются из `~/Public/untra` скриптом `python3 build.py --bot <путь к боту>`. Блоки между `UNTRA:BEGIN` и `UNTRA:END` (persona.md, knowledge.md, prices.js) и файлы `src/strategies/{overview,contra,linkedin,reddit,telegram}.md` руками не править: правки делать в untra и пересобирать.
+Прайс, знания об Азизе и стратегии площадок берутся из системы untra на сервере (`data/untra`): `src/untra/live.js` раз в 30 с проверяет изменения и сам пересобирает блоки (тот же результат, что `build.py --bot`). Claude/GPT правят систему через MCP-коннектор (`src/untra/mcp.js`). Блоки между `UNTRA:BEGIN` и `UNTRA:END` (persona.md, knowledge.md, prices.js) и файлы `src/strategies/{overview,contra,linkedin,reddit,telegram}.md` руками не править: правки делать в untra и пересобирать.
 
 ## Правила кода
 

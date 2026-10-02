@@ -96,6 +96,8 @@ import { checkPrices } from "./prices.js";
 import { MENU_COMMANDS, buildHelpText, cmdBtn, askBtn, grid, askPrompt, QUICK_MENU } from "./commands.js";
 import { extractMedia, hasMedia, MediaError } from "./media.js";
 import { toTelegramHtml, splitForTelegram } from "./format.js";
+import { startMcpServer } from "./untra/mcp.js";
+import { backupTick, restoreIfEmpty } from "./untra/backup.js";
 
 console.log(`[bot] Запуск. Режим Claude: ${config.claudeMode}${config.dryRun ? " (DRY_RUN)" : ""}`);
 
@@ -1437,6 +1439,11 @@ setPlannerMemoryProvider(memoryForAgents);
 startMtproto().catch((err) => console.error("[mtproto] Старт:", err.message));
 // Тик агента независимо от long polling (getUpdates ждёт до 30 с).
 setInterval(agentTick, 20_000);
+// Система untra: дверь для Claude/GPT (MCP) и ночной бэкап в GitHub.
+restoreIfEmpty()
+  .catch((e) => console.error("[backup] восстановление:", e.message.replace(/https:\/\/[^@]+@/g, "https://***@")))
+  .finally(() => startMcpServer());
+setInterval(() => backupTick(console.log), 60_000);
 
 pollLoop().catch((err) => {
   console.error("[bot] Критическая ошибка, бот остановлен:", err);

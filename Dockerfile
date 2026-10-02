@@ -29,5 +29,6 @@ RUN if [ -f package-lock.json ]; then \
 COPY . .
 
 ENV NODE_ENV=production
+EXPOSE 8787
 
 CMD ["npm", "start"]

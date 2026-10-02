@@ -9,6 +9,14 @@ export const ALLOWED_PRICES = [150_000, 300_000, 2_500_000, 3_000_000, 4_000_000
 
 const ALLOWED_SET = new Set(ALLOWED_PRICES);
 
+// Живое обновление из data/untra/core/offer.yaml (src/untra/live.js), без передеплоя.
+export function setAllowedPrices(list) {
+  if (!Array.isArray(list) || !list.length) return;
+  ALLOWED_PRICES.splice(0, ALLOWED_PRICES.length, ...list);
+  ALLOWED_SET.clear();
+  for (const v of list) ALLOWED_SET.add(v);
+}
+
 // "3.5 млн", "2,5 млн" -> 3 500 000 / 2 500 000
 function extractMillions(text) {
   const amounts = [];

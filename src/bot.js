@@ -98,6 +98,7 @@ import { extractMedia, hasMedia, MediaError } from "./media.js";
 import { toTelegramHtml, splitForTelegram } from "./format.js";
 import { startMcpServer } from "./untra/mcp.js";
 import { backupTick, restoreIfEmpty } from "./untra/backup.js";
+import { liveTick } from "./untra/live.js";
 
 console.log(`[bot] Запуск. Режим Claude: ${config.claudeMode}${config.dryRun ? " (DRY_RUN)" : ""}`);
 
@@ -1442,7 +1443,11 @@ setInterval(agentTick, 20_000);
 // Система untra: дверь для Claude/GPT (MCP) и ночной бэкап в GitHub.
 restoreIfEmpty()
   .catch((e) => console.error("[backup] восстановление:", e.message.replace(/https:\/\/[^@]+@/g, "https://***@")))
-  .finally(() => startMcpServer());
+  .finally(() => {
+    liveTick(console.log);
+    startMcpServer();
+  });
+setInterval(() => liveTick(console.log), 30_000);
 setInterval(() => backupTick(console.log), 60_000);
 
 pollLoop().catch((err) => {

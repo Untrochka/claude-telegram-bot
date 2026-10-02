@@ -99,6 +99,8 @@ import { toTelegramHtml, splitForTelegram } from "./format.js";
 import { startMcpServer } from "./untra/mcp.js";
 import { backupTick, restoreIfEmpty } from "./untra/backup.js";
 import { liveTick } from "./untra/live.js";
+import { readSystemFile, writeSystemFile, crmLog } from "./untra/store.js";
+import { setEveningPlanRunner } from "./planner.js";
 
 console.log(`[bot] Запуск. Режим Claude: ${config.claudeMode}${config.dryRun ? " (DRY_RUN)" : ""}`);
 
@@ -453,6 +455,7 @@ async function handleAgentCallback(query, prefix, action, id) {
       }
       answer = res;
     } else if (prefix === "sn") answer = await handleStrategyNoteCallback(query, action, id);
+    else if (prefix === "uw" || prefix === "cl") answer = await handleUntraCallback(query, prefix, action, id);
   } catch (err) {
     console.error(`[bot] Ошибка кнопки ${prefix}:${action}:`, err.message);
     answer = "Ошибка, см. логи";
@@ -469,6 +472,55 @@ ${note.text}`, [
       { text: "🗑 Не надо", callback_data: `sn:n:${id}` },
     ],
   ]);
+}
+
+// --- Изменения системы untra и CRM от Рафаэля: только после ✅ Мастера ---
+async function sendUntraWriteCard(chatId, w) {
+  let before = "";
+  try {
+    before = readSystemFile(w.path);
+  } catch {}
+  const id = createDraft({ kind: "untra_write", path: w.path, content: w.content });
+  const preview = w.content.length > 3000 ? w.content.slice(0, 3000) + "\n…" : w.content;
+  const sizeNote = before ? `было ${before.length} → станет ${w.content.length} символов` : "новый файл";
+  await sendMessageWithButtons(chatId, `📝 Рафаэль хочет изменить ${w.path} (${sizeNote}):\n\n${preview}`, [
+    [
+      { text: "✅ Записать", callback_data: `uw:y:${id}` },
+      { text: "🗑 Не надо", callback_data: `uw:n:${id}` },
+    ],
+  ]);
+}
+
+async function sendCrmLogCard(chatId, c) {
+  const id = createDraft({ kind: "crm_log", event: c });
+  const who = c.id || c.business || c.contact || "новый лид";
+  await sendMessageWithButtons(chatId, `🗂 Запись в CRM: ${c.action} — ${who}${c.summary ? `\n${c.summary}` : ""}`, [
+    [
+      { text: "✅ Записать", callback_data: `cl:y:${id}` },
+      { text: "🗑 Не надо", callback_data: `cl:n:${id}` },
+    ],
+  ]);
+}
+
+async function handleUntraCallback(query, prefix, action, id) {
+  const d = getDraft(id);
+  if (!d) return "Уже не актуально.";
+  deleteDraft(id);
+  const text = (query.message.text || "").slice(0, 3500);
+  if (action !== "y") {
+    await editMessageText(query.message.chat.id, query.message.message_id, `${text}\n\n🗑 Не менял.`);
+    return "Ок";
+  }
+  try {
+    if (prefix === "uw") writeSystemFile(d.path, d.content, "raphael (✅ Мастер)");
+    else crmLog(d.event, "raphael (✅ Мастер)");
+    logEvent?.(`Мастер подтвердил: ${prefix === "uw" ? `файл ${d.path}` : `CRM ${d.event.action}`}`);
+    await editMessageText(query.message.chat.id, query.message.message_id, `${text}\n\n✅ Записано.`);
+    return "Записал";
+  } catch (e) {
+    await editMessageText(query.message.chat.id, query.message.message_id, `${text}\n\n⚠️ Не получилось: ${e.message}`);
+    return "Ошибка";
+  }
 }
 
 async function handleStrategyNoteCallback(query, action, id) {
@@ -962,7 +1014,7 @@ async function secretaryTurn(chatId, text, images = []) {
   const stopTyping = keepTyping(chatId);
   const streamer = createStreamer(chatId, { transform: visibleRaphaelText });
   try {
-    const { text: reply, notes, rewrites, actions } = await raphaelTurn({
+    const { text: reply, notes, rewrites, actions, writes, crmLogs } = await raphaelTurn({
       chatKey,
       text,
       images,
@@ -980,6 +1032,8 @@ async function secretaryTurn(chatId, text, images = []) {
       if (!rewrites?.length && !notes?.length) console.warn("[bot] Пустой ответ от Рафаэля, пропускаю отправку.");
     }
     for (const note of notes || []) await sendStrategyNoteCard(chatId, note);
+    for (const w of writes || []) await sendUntraWriteCard(chatId, w);
+    for (const c of crmLogs || []) await sendCrmLogCard(chatId, c);
     for (const rw of rewrites || []) {
       const ok = await applyDraftRewrite(rw.draftId, rw.instruction);
       if (!ok) await sendMessage(chatId, `Черновик #${rw.draftId} уже не актуален.`);
@@ -1433,6 +1487,15 @@ async function registerCommands() {
 }
 
 registerCommands();
+// 21:45 — Рафаэль сам готовит план на завтра; NOW.md меняется только после ✅.
+setEveningPlanRunner(() =>
+  secretaryTurn(
+    config.ownerTelegramId,
+    "[Автозадача 21:45] Подготовь план на завтра. Прочитай [[UNTRA: state/NOW.md]], [[CRM: тёплые]] и [[CRM: статус]], учти моё расписание и приоритеты. " +
+      "Потом коротко напиши мне план (что сделать мне самому, что делают ИИ, кому напомнить, сколько новых и в каких сегментах) " +
+      "и предложи обновлённый state/NOW.md целиком через UNTRA_WRITE, с разделом «## План на <завтрашняя дата>» в начале."
+  )
+);
 setOwnerLogger((text) => addBotNote(text));
 // Общая память: комментарии и адаптации постов знают, что Мастер просил запомнить.
 setMemoryProvider(memoryForAgents);

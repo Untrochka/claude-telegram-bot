@@ -1,3 +1,4 @@
+import { readSystemFile } from "./untra/store.js";
 // Планировщик: напоминает про посты и комментарии на всех площадках по
 // расписанию из стратегий (время Ташкента, вне школы и курсов), готовит
 // адаптации постов для Contra/LinkedIn, утренняя сводка и воскресный отчёт.
@@ -78,6 +79,7 @@ export const TASKS = [
   { key: "contra_comments", label: "Комментарии на Contra", days: [0, 1, 2, 3, 4, 5, 6], time: "21:30", platform: "contra" },
   { key: "discovery_report", label: "Отчёт по каналам для комментариев", days: [1], time: "12:00", platform: null },
   { key: "weekly", label: "Воскресный отчёт", days: [0], time: "20:00", platform: null },
+  { key: "evening_plan", label: "План на завтра", days: [0, 1, 2, 3, 4, 5, 6], time: "21:45", platform: null },
 ];
 const WINDOW_MIN = 180;
 
@@ -231,7 +233,7 @@ async function showoffReminder() {
 
 export function morningBriefText() {
   const now = tashkentNow();
-  const today = TASKS.filter((t) => t.key !== "brief" && t.key !== "weekly" && t.key !== "discovery_report" && taskDueToday(t, now));
+  const today = TASKS.filter((t) => !["brief", "weekly", "discovery_report", "evening_plan"].includes(t.key) && taskDueToday(t, now));
   const lines = [`☀️ План на сегодня (${now.date})`];
   if (today.length) for (const t of today) lines.push(`• ${t.time} — ${t.label}`);
   else lines.push("• по площадкам сегодня ничего обязательного");
@@ -239,6 +241,11 @@ export function morningBriefText() {
   lines.push("", `💬 Комментарии в Telegram: ${commentsActive() ? `ждут решения ${drafts}, отправлено сегодня ${getDailyCount("commentsSent")}` : isMtprotoReady() ? "агент выключен (/comments on)" : "MTProto не подключён"}`);
   const tasks = listOpenTasks();
   if (tasks.length) lines.push(`📝 Открытых задач: ${tasks.length} (/todo)`);
+  try {
+    const nowMd = readSystemFile("state/NOW.md");
+    const m = nowMd.match(/## План на[^\n]*\n([\s\S]*?)(?=\n## |$)/);
+    if (m) lines.push("", "📋 План из NOW.md:", m[1].trim().split("\n").slice(0, 15).join("\n"));
+  } catch {}
   if (now.dow === 6) lines.push("🎬 Сегодня контент-сессия: собери записи экрана за неделю → 3 поста + Reels.");
   return lines.join("\n");
 }
@@ -258,14 +265,20 @@ function weeklyReportText() {
   label.reddit_answer = "Ответы на Reddit";
   const lines = ["📊 Неделя:", `• Постов в Untra.dev: ${posts} (цель 3)`, `• Комментариев в Telegram через бота: ${comments}`];
   for (const [k, v] of Object.entries(byKey)) {
-    if (k === "brief" || k === "weekly") continue;
+    if (k === "brief" || k === "weekly" || k === "evening_plan") continue;
     lines.push(`• ${label[k] || k}: сделано ${v.done}${v.skip ? `, пропущено ${v.skip}` : ""}`);
   }
   lines.push("", "Цифры для таблицы в 00_STATUS.md: заявки, созвоны и оплаты из CRM — запиши сам, у бота их нет.");
   return lines.join("\n");
 }
 
+let eveningPlanRunner = null;
+export function setEveningPlanRunner(fn) {
+  eveningPlanRunner = fn;
+}
+
 const RUNNERS = {
+  evening_plan: () => eveningPlanRunner?.(),
   brief: () => sendMessage(config.ownerTelegramId, morningBriefText()),
   tg_post: tgPostReminder,
   contra_post: contraPost,

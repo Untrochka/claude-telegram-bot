@@ -44,7 +44,7 @@ Telegram-бот-секретарь для фрилансера Азизхона 
 
 ## Общая система untra
 
-Прайс, знания об Азизе и стратегии площадок берутся из системы untra на сервере (`data/untra`): `src/untra/live.js` раз в 30 с проверяет изменения и сам пересобирает блоки (тот же результат, что `build.py --bot`). Claude/GPT правят систему через MCP-коннектор (`src/untra/mcp.js`). Блоки между `UNTRA:BEGIN` и `UNTRA:END` (persona.md, knowledge.md, prices.js) и файлы `src/strategies/{overview,contra,linkedin,reddit,telegram}.md` руками не править: правки делать в untra и пересобирать.
+Прайс, знания об Азизе и стратегии площадок берутся из системы untra на сервере (`data/untra`): `src/untra/live.js` раз в 30 с проверяет изменения и сам пересобирает блоки (тот же результат, что `build.py --bot`). Claude/GPT правят систему через MCP-коннектор (`src/untra/mcp.js`). Рафаэль читает систему и CRM маркерами `[[UNTRA: путь]]`, `[[CRM: …]]`; менять может только через `[[UNTRA_WRITE]]` / `[[CRM_LOG]]` — карточка ✅/🗑, без ✅ Мастера ничего не пишется. В 21:45 задача `evening_plan` (planner.js) просит Рафаэля составить план на завтра и предложить новый NOW.md. Блоки между `UNTRA:BEGIN` и `UNTRA:END` (persona.md, knowledge.md, prices.js) и файлы `src/strategies/{overview,contra,linkedin,reddit,telegram}.md` руками не править: правки делать в untra и пересобирать.
 
 ## Правила кода
 

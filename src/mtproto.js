@@ -300,3 +300,81 @@ export function postLink(username, postId) {
 export function myUserId() {
   return meId;
 }
+
+// --- Скан клиентских чатов и отправка очереди (см. outreach.js) ---
+// Только чтение папки и последних сообщений; отправка — только из кнопки ✅ Мастера.
+
+const filterTitle = (f) => (typeof f.title === "string" ? f.title : f.title?.text || "");
+
+// Папка Telegram (dialog filter) по имени -> { title, peers: [InputPeer], byFlags }
+// byFlags = true, если папка собрана флагами («все контакты» и т.п.) — такие чаты не в списке.
+export async function getFolderPeers(name) {
+  const res = await safe(() => client.invoke(new Api.messages.GetDialogFilters()));
+  const filters = (Array.isArray(res) ? res : res.filters || []).filter((f) => f.className === "DialogFilter" || f.className === "DialogFilterChatlist");
+  const want = String(name).trim().toLowerCase();
+  const f = filters.find((x) => filterTitle(x).trim().toLowerCase() === want) || filters.find((x) => filterTitle(x).toLowerCase().includes(want));
+  if (!f) return { error: `Папка «${name}» не найдена. Есть: ${filters.map(filterTitle).join(", ") || "—"}` };
+  const peers = [...(f.pinnedPeers || []), ...(f.includePeers || [])];
+  const byFlags = Boolean(f.contacts || f.nonContacts || f.groups || f.broadcasts || f.bots);
+  return { title: filterTitle(f), peers, byFlags };
+}
+
+const peerKey = (p) => String(p?.userId ?? p?.chatId ?? p?.channelId ?? "");
+
+// Состояние диалогов пачками по 50: последний id, до какого id собеседник прочитал наше.
+// -> [{ id, inputPeer, title, username, isBot, topId, readOutboxMaxId }]
+export async function peerDialogsInfo(inputPeers, { pauseMs = 1000 } = {}) {
+  const out = [];
+  for (let i = 0; i < inputPeers.length; i += 50) {
+    const part = inputPeers.slice(i, i + 50);
+    const res = await safe(() => client.invoke(new Api.messages.GetPeerDialogs({ peers: part.map((peer) => new Api.InputDialogPeer({ peer })) })));
+    const ents = new Map([...(res.users || []), ...(res.chats || [])].map((e) => [String(e.id), e]));
+    for (const d of res.dialogs || []) {
+      const id = peerKey(d.peer);
+      const e = ents.get(id);
+      const inputPeer = part.find((p) => peerKey(p) === id) || null;
+      out.push({
+        id,
+        inputPeer,
+        title: e ? [e.firstName, e.lastName].filter(Boolean).join(" ") || e.title || "" : "",
+        username: e?.username || "",
+        isBot: Boolean(e?.bot),
+        topId: d.topMessage || 0,
+        readOutboxMaxId: d.readOutboxMaxId || 0,
+      });
+    }
+    if (i + 50 < inputPeers.length) await new Promise((r) => setTimeout(r, pauseMs));
+  }
+  return out;
+}
+
+// Последние n сообщений чата (новые сверху) + наше последнее, если его нет среди них.
+// -> { msgs: [{ id, out, date, text, viaBot }], lastOut: {id, date} | null }
+export async function lastMessages(inputPeer, n = 3) {
+  const shape = (m) => ({ id: m.id, out: Boolean(m.out), date: (m.date || 0) * 1000, text: (m.message || "").trim() || mediaLabel(m), viaBot: Boolean(m.viaBotId) });
+  const msgs = [...(await safe(() => client.getMessages(inputPeer, { limit: n })))].filter((m) => m?.id).map(shape);
+  let lastOut = msgs.find((m) => m.out) || null;
+  if (!lastOut && msgs.length) {
+    const mine = await safe(() => client.getMessages(inputPeer, { limit: 1, fromUser: "me" }));
+    const m = [...mine].find((x) => x?.id);
+    lastOut = m ? shape(m) : null;
+  }
+  return { msgs, lastOut };
+}
+
+// Отправка личного сообщения от аккаунта Мастера (только из очереди после ✅).
+// to — @username или числовой id (из диалогов). -> { id, title }
+export async function sendDirect(to, text) {
+  if (config.dryRun) throw new Error("DRY_RUN включён — сообщение не отправлено");
+  const raw = String(to).trim();
+  let peer;
+  if (/^-?\d+$/.test(raw)) {
+    const d = (await getDialogs()).find((x) => x.id === raw);
+    if (!d) throw new Error(`чат с id ${raw} не найден среди диалогов`);
+    peer = d.entity;
+  } else {
+    peer = await safe(() => client.getEntity(raw.replace(/^https?:\/\/t\.me\//, "").replace(/^@?/, "@")));
+  }
+  const m = await safe(() => client.sendMessage(peer, { message: text }));
+  return { id: m?.id || null, title: peer?.username ? `@${peer.username}` : raw };
+}

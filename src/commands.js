@@ -10,6 +10,8 @@ export const MENU_COMMANDS = [
   { command: "remind", description: "[30m|2h|1d] [текст] — напомнить" },
   { command: "chats", description: "Клиентские чаты — открыть кнопкой" },
   { command: "chat", description: "[имя|id] — разобрать переписку" },
+  { command: "scan_clients", description: "[папка] — статусы всех клиентских чатов" },
+  { command: "stop_queue", description: "Остановить очередь рассылки" },
   { command: "auto", description: "[on|off] — автоответы клиентам" },
   { command: "comments", description: "[check|on|off] — агент комментариев" },
   { command: "watch", description: "[find|reset|add @канал|remove @канал]" },
@@ -297,6 +299,18 @@ export const HELP_GROUPS = [
         usage: "/chat <id>",
         text: "загрузить переписку с одним клиентом в контекст, дальше можно спрашивать про неё.",
         example: "/chat 123456789",
+      },
+      {
+        kind: "command",
+        usage: "/scan_clients [папка]",
+        text: "проверить все чаты папки (по умолчанию «Клиенты»): кто ждёт ответа, кто отказал, у кого сменился статус. Изменения для CRM придут одной карточкой ✅.",
+        example: "/scan_clients",
+      },
+      {
+        kind: "command",
+        usage: "/stop_queue",
+        text: "остановить очередь сообщений, которую Рафаэль запустил после твоего ✅ (пауза 40–90 с, не больше 25 в день).",
+        example: "/stop_queue",
       },
       {
         kind: "command",

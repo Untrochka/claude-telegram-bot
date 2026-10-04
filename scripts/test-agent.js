@@ -10,6 +10,7 @@ process.env.OWNER_TELEGRAM_ID ||= "111";
 process.env.DRY_RUN = "true";
 const tmpState = path.join(os.tmpdir(), `agent-test-state-${Date.now()}.json`);
 process.env.STATE_PATH = tmpState;
+process.env.UNTRA_DATA_DIR = path.join(os.tmpdir(), `agent-test-untra-${Date.now()}`);
 
 const { parseFilter, parseWriter, postPassesHeuristics, channelMetrics, channelQualifies, scoreChannel, isCancelText, dictatedText, bansFromInstruction, banViolations } = await import("../src/comments.js");
 const { redditPostPasses } = await import("../src/reddit.js");
@@ -133,6 +134,53 @@ check("роутер: запомни", localRoute("запомни: созвон �
 check("роутер: задачи", localRoute("мои задачи")?.action === "todo_list");
 check("роутер: сложное -> Рафаэль", localRoute("найди мне клиентов и напиши им") === null);
 check("роутер: вопрос про каналы -> Рафаэль", localRoute("почему так мало каналов?") === null);
+
+
+// --- outreach: скан, CRM_BATCH, SEND_QUEUE ---
+{
+  const { classifyChat, STATUS, extractJsonMarkers, stripJsonMarkers, workdaysSince, crmEventFor, isRefusalText } = await import("../src/outreach.js");
+  const { crmLog, loadCrm } = await import("../src/untra/store.js");
+  const t0 = Date.parse("2026-10-05T10:00:00+05:00");
+  const out = { id: 10, out: true, date: t0, text: "Здравствуйте" };
+  const inc = (id, text, dt = 3600e3) => ({ id, out: false, date: t0 + dt, text });
+  check("скан: отказ", classifyChat({ msgs: [inc(11, "Спасибо, нет, нам не нужно"), out], lastOut: out }) === STATUS.refusal);
+  check("скан: «спасибо» не отказ", !isRefusalText("Спасибо, посмотрю"));
+  check("скан: узб. отказ", classifyChat({ msgs: [inc(11, "hozircha kerak emas"), out], lastOut: out }) === STATUS.refusal);
+  check("скан: автоответ быстрый", classifyChat({ msgs: [inc(11, "Здравствуйте!", 3000), out], lastOut: out }) === STATUS.auto);
+  check("скан: автоответ бот", classifyChat({ isBot: true, msgs: [inc(11, "Меню"), out], lastOut: out }) === STATUS.auto);
+  check("скан: ждёт ответа", classifyChat({ msgs: [inc(11, "А сколько стоит?"), out], lastOut: out }) === STATUS.waiting);
+  check("скан: не отправлено", classifyChat({ msgs: [], lastOut: null }) === STATUS.notSent);
+  check("скан: написал первым → ждёт ответа", classifyChat({ msgs: [inc(11, "Привет")], lastOut: null }) === STATUS.waiting);
+  check("скан: не просмотрено", classifyChat({ msgs: [out], lastOut: out, readOutboxMaxId: 9 }) === STATUS.unread);
+  check("скан: просмотрено", classifyChat({ msgs: [out], lastOut: out, readOutboxMaxId: 10 }) === STATUS.seen);
+  const now = Date.parse("2026-10-08T12:00:00+05:00"); // чт
+  check("раб. дни пн→чт = 3", workdaysSince("2026-10-05", now) === 3);
+  check("раб. дни пт→пн = 1", workdaysSince("2026-10-02", Date.parse("2026-10-05T12:00:00+05:00")) === 1);
+  check("скан: холодный", classifyChat({ msgs: [out], lastOut: out, readOutboxMaxId: 10, lead: { status: "Напоминание отправлено", last_contact: "2026-10-05" }, now }) === STATUS.cold);
+  check("скан: напоминание свежее", classifyChat({ msgs: [out], lastOut: out, readOutboxMaxId: 10, lead: { status: "Напоминание отправлено", last_contact: "2026-10-07" }, now }) === STATUS.seen);
+
+  const txt = 'Ок, вот очередь.\n[[SEND_QUEUE: [{"to":"@shop","text":"Текст ]] с [скобками]","crm":{"action":"reminder","id":"C-001"}}] ]]\n[[CRM_BATCH: [{"action":"note","id":"C-2","status":"Отказ"}]]]';
+  const q = extractJsonMarkers(txt, "SEND_QUEUE");
+  check("SEND_QUEUE разобран", q.length === 1 && q[0].value?.[0]?.text === "Текст ]] с [скобками]");
+  check("CRM_BATCH разобран", extractJsonMarkers(txt, "CRM_BATCH")[0]?.value?.[0]?.id === "C-2");
+  check("маркеры скрыты", stripJsonMarkers(txt).trim() === "Ок, вот очередь.");
+  check("скан скрыт в стриме", visibleRaphaelText("[[SCAN_CLIENTS]]") === null && visibleRaphaelText("Проверяю.\n[[SCAN_CLIENTS: Клиенты]]") === "Проверяю.");
+  check("недописанный SEND_QUEUE скрыт", visibleRaphaelText('Готово.\n[[SEND_QUEUE: [{"to":"@a"') === "Готово.");
+
+  // Фикс: отказ от того, кого нет в CRM
+  let lead = null;
+  try {
+    lead = crmLog({ action: "refusal", contact: "@nobody_shop", business: "Nobody", summary: "Отказ: не нужно" }, "test");
+  } catch {}
+  check("refusal без лида создаёт лида", lead?.status === "Отказ" && lead?.note === "не из рассылки" && lead?.do_not_write === true);
+  const before = loadCrm().daily.length;
+  const ev = crmEventFor({ id: "555", username: "newshop", title: "New Shop" }, STATUS.seen, null);
+  crmLog(ev, "test");
+  const created = loadCrm().leads.find((l) => l.handle === "@newshop");
+  check("новый чат из скана: статус и без daily", created?.status === STATUS.seen && loadCrm().daily.length === before);
+  crmLog({ action: "note", id: created.id, status: STATUS.waiting }, "test");
+  check("note со статусом меняет статус", loadCrm().leads.find((l) => l.id === created.id)?.status === STATUS.waiting);
+}
 
 if (process.argv.includes("--live")) {
   const { askRaphael } = await import("../src/claudeClient.js");

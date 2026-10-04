@@ -194,3 +194,13 @@ export async function editMessageWithButtons(chatId, messageId, text, inlineKeyb
 export async function deleteMessage(chatId, messageId) {
   return call("deleteMessage", { chat_id: chatId, message_id: messageId });
 }
+
+// Без записи в журнал Рафаэля (прогресс очереди, полный список сообщений):
+// Рафаэлю идёт только итог, тексты и промежуточные правки ему не нужны.
+export async function sendMessageQuiet(chatId, text) {
+  return call("sendMessage", { chat_id: chatId, text });
+}
+
+export async function editMessageQuiet(chatId, messageId, text, inlineKeyboard = null) {
+  return call("editMessageText", { chat_id: chatId, message_id: messageId, text, ...(inlineKeyboard ? { reply_markup: { inline_keyboard: inlineKeyboard } } : {}) });
+}

@@ -101,6 +101,7 @@ import { backupTick, restoreIfEmpty } from "./untra/backup.js";
 import { liveTick } from "./untra/live.js";
 import { readSystemFile, writeSystemFile, crmLog } from "./untra/store.js";
 import { setEveningPlanRunner } from "./planner.js";
+import { runScanForOwner, sendCrmBatchCard, sendQueueCard, handleCrmBatchCallback, handleSendQueueCallback, stopQueue, DEFAULT_FOLDER } from "./outreach.js";
 
 console.log(`[bot] Запуск. Режим Claude: ${config.claudeMode}${config.dryRun ? " (DRY_RUN)" : ""}`);
 
@@ -456,6 +457,8 @@ async function handleAgentCallback(query, prefix, action, id) {
       answer = res;
     } else if (prefix === "sn") answer = await handleStrategyNoteCallback(query, action, id);
     else if (prefix === "uw" || prefix === "cl") answer = await handleUntraCallback(query, prefix, action, id);
+    else if (prefix === "cb") answer = await handleCrmBatchCallback(query, action, id);
+    else if (prefix === "sq") answer = await handleSendQueueCallback(query, action, id);
   } catch (err) {
     console.error(`[bot] Ошибка кнопки ${prefix}:${action}:`, err.message);
     answer = "Ошибка, см. логи";
@@ -1014,7 +1017,7 @@ async function secretaryTurn(chatId, text, images = []) {
   const stopTyping = keepTyping(chatId);
   const streamer = createStreamer(chatId, { transform: visibleRaphaelText });
   try {
-    const { text: reply, notes, rewrites, actions, writes, crmLogs } = await raphaelTurn({
+    const { text: reply, notes, rewrites, actions, writes, crmLogs, crmBatches, sendQueues } = await raphaelTurn({
       chatKey,
       text,
       images,
@@ -1034,6 +1037,8 @@ async function secretaryTurn(chatId, text, images = []) {
     for (const note of notes || []) await sendStrategyNoteCard(chatId, note);
     for (const w of writes || []) await sendUntraWriteCard(chatId, w);
     for (const c of crmLogs || []) await sendCrmLogCard(chatId, c);
+    for (const b of crmBatches || []) await sendCrmBatchCard(chatId, b);
+    for (const q of sendQueues || []) await sendQueueCard(chatId, q);
     for (const rw of rewrites || []) {
       const ok = await applyDraftRewrite(rw.draftId, rw.instruction);
       if (!ok) await sendMessage(chatId, `Черновик #${rw.draftId} уже не актуален.`);
@@ -1387,6 +1392,15 @@ async function handlePersonalMessage(msg) {
       return;
     case "/plan":
       await sendMessage(chatId, morningBriefText());
+      return;
+    case "/scan_clients": {
+      const folder = text.split(/\s+/).slice(1).join(" ").trim() || DEFAULT_FOLDER;
+      await sendMessage(chatId, `🔎 Проверяю папку «${folder}»…`);
+      for (const chunk of splitForTelegram(await runScanForOwner(chatId, folder))) await sendMessage(chatId, chunk);
+      return;
+    }
+    case "/stop_queue":
+      await sendMessage(chatId, stopQueue() ? "⛔ Останавливаю очередь — итог пришлю." : "Очереди сейчас нет.");
       return;
     default:
       break;

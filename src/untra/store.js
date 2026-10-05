@@ -127,9 +127,16 @@ export function crmLog(event, who) {
   if (!lead && event.contact) lead = crm.leads.find((l) => norm(l.contact) === norm(event.contact) || norm(l.handle) === norm(event.contact));
   if (!lead && event.business) lead = crm.leads.find((l) => norm(l.business) === norm(event.business));
   if (!lead) {
-    if (event.action !== "sent") throw new Error("Лид не найден. Укажи id, contact или business существующего лида.");
-    lead = { id: nextId(crm), first_contact: today() };
-    crm.leads.push(lead);
+    // Отказ от того, кого нет в CRM (написал сам, не из рассылки): сначала заводим лида, потом пишем отказ.
+    if (event.action === "refusal" && (event.contact || event.business || event.handle)) {
+      lead = { id: nextId(crm), first_contact: today(), status: STATUS_BY_ACTION.sent, note: "не из рассылки" };
+      crm.leads.push(lead);
+    } else if (event.action !== "sent") throw new Error("Лид не найден. Укажи id, contact или business существующего лида.");
+    else {
+      lead = { id: nextId(crm), first_contact: today() };
+      if (event.no_daily) lead.note = "не из рассылки";
+      crm.leads.push(lead);
+    }
   }
   for (const k of ["business", "contact", "handle", "link", "offer", "segment", "market", "channel", "source"]) {
     if (event[k] && !lead[k]) lead[k] = event[k];
@@ -140,6 +147,9 @@ export function crmLog(event, who) {
   if (event.action !== "note") {
     lead.status = event.status || STATUS_BY_ACTION[event.action];
     lead.last_contact = event.date || today();
+  } else if (event.status) {
+    // Сверка статусов (scan_clients): меняем только статус, без «последнего контакта».
+    lead.status = event.status;
   }
   if (event.action === "reply") lead.last_signal = event.text || event.summary || lead.last_signal;
   if (event.action === "refusal" || event.action === "cold") {
@@ -148,7 +158,7 @@ export function crmLog(event, who) {
       crm.stoplist.push({ who: lead.business || lead.contact, contact: lead.contact || lead.handle, reason: event.summary || "Отказ", date: today() });
     }
   }
-  if (event.action === "sent" || event.action === "reminder") {
+  if ((event.action === "sent" || event.action === "reminder") && !event.no_daily) {
     crm.daily.push({
       date: event.date || today(),
       segment: event.segment || lead.segment || "",

@@ -14,7 +14,7 @@ process.env.UNTRA_DATA_DIR = path.join(os.tmpdir(), `agent-test-untra-${Date.now
 
 const { parseFilter, parseWriter, postPassesHeuristics, channelMetrics, channelQualifies, scoreChannel, isCancelText, dictatedText, bansFromInstruction, banViolations } = await import("../src/comments.js");
 const { redditPostPasses } = await import("../src/reddit.js");
-const { tashkentNow, shouldFire, TASKS, taskDueToday } = await import("../src/planner.js");
+const { tashkentNow, shouldFire, TASKS, taskDueToday, isQuietTime, nextContraFormat, CONTRA_POST_FORMATS } = await import("../src/planner.js");
 const { strategiesFor, readStrategy, addStrategyNote, removeStrategyNote, strategiesBlock } = await import("../src/strategies.js");
 const { getModel, getEffort, setEffort, resetEfforts } = await import("../src/models.js");
 const { visibleRaphaelText, parseChatRequest } = await import("../src/raphael.js");
@@ -84,6 +84,9 @@ const mon = tashkentNow(new Date("2026-09-28T08:10:00Z"));
 check("tg_post не в понедельник", !shouldFire(tg, mon, {}, new Date("2026-09-28T08:10:00Z")));
 const late = tashkentNow(new Date("2026-09-29T17:30:00Z")); // 22:30
 check("окно 3 ч прошло", !shouldFire(tg, late, {}, new Date("2026-09-29T17:30:00Z")));
+check("тихие часы 23:45", isQuietTime({ time: "23:45" }) && isQuietTime({ time: "03:00" }) && !isQuietTime({ time: "11:30" }));
+check("формат Contra по кругу", nextContraFormat(null).key === CONTRA_POST_FORMATS[0].key && nextContraFormat(CONTRA_POST_FORMATS.at(-1).key).key === CONTRA_POST_FORMATS[0].key && nextContraFormat("figma_to_code").key !== "figma_to_code");
+check("комменты Contra в 11:30", TASKS.find((t) => t.key === "contra_comments").time === "11:30");
 const show = TASKS.find((t) => t.key === "showoff");
 check("showoff только первая суббота", taskDueToday(show, tashkentNow(new Date("2026-10-03T08:00:00Z"))) && !taskDueToday(show, tashkentNow(new Date("2026-10-10T08:00:00Z"))));
 

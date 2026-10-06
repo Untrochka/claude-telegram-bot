@@ -76,12 +76,17 @@ export const TASKS = [
   { key: "showoff", label: "Reddit Showoff Saturday", days: [6], time: "12:00", platform: "reddit", firstWeekOfMonth: true },
   { key: "linkedin_post", label: "Пост в LinkedIn", days: [5], time: "13:00", platform: "linkedin", evenWeeks: true },
   { key: "linkedin_comments", label: "Комментарии в LinkedIn", days: [3], time: "21:35", platform: "linkedin" },
-  { key: "contra_comments", label: "Комментарии на Contra", days: [0, 1, 2, 3, 4, 5, 6], time: "21:30", platform: "contra" },
+  { key: "contra_comments", label: "Комментарии на Contra (3 шт.)", days: [0, 1, 2, 3, 4, 5, 6], time: "11:30", platform: "contra" },
   { key: "discovery_report", label: "Отчёт по каналам для комментариев", days: [1], time: "12:00", platform: null },
   { key: "weekly", label: "Воскресный отчёт", days: [0], time: "20:00", platform: null },
   { key: "evening_plan", label: "План на завтра", days: [0, 1, 2, 3, 4, 5, 6], time: "21:45", platform: null },
 ];
 const WINDOW_MIN = 180;
+// Тихие часы: после 23:30 и до 08:00 бот ничего не напоминает (стратегия Contra 07.10).
+export function isQuietTime(now = tashkentNow()) {
+  const m = toMin(now.time);
+  return m >= toMin("23:30") || m < toMin("08:00");
+}
 
 export function taskDueToday(task, now = tashkentNow(), date = new Date()) {
   if (!task.days.includes(now.dow)) return false;
@@ -166,17 +171,48 @@ async function adaptPost(platform) {
   return !text || /^SKIP\b/i.test(text) ? null : text;
 }
 
+// Форматы постов Contra (playbooks/contra.md, утверждено 07.10). Ротация — не повторять подряд.
+export const CONTRA_POST_FORMATS = [
+  { key: "figma_to_code", name: "Из Figma в код", hint: "взять красивый концепт дизайнера с Contra (с отметкой автора), сверстать кусок с анимацией, показать видео 10–30 с" },
+  { key: "hardest_part", name: "Самым сложным было не…, а…", hint: "реальная трудность из работы (баг, анимация, скорость, админка) + до/после" },
+  { key: "poll", name: "Опрос: 2 варианта UI", hint: "два варианта одного экрана, вопрос «какой бы выбрали и почему?»" },
+  { key: "list", name: "Список из опыта", hint: "3–5 коротких пунктов: что проверяю перед сдачей сайта / ошибки в админках / что ускоряет Next.js-сайт" },
+];
+
+export function nextContraFormat(lastKey) {
+  const i = CONTRA_POST_FORMATS.findIndex((f) => f.key === lastKey);
+  return CONTRA_POST_FORMATS[(i + 1) % CONTRA_POST_FORMATS.length];
+}
+
 async function contraPost() {
-  const text = await adaptPost("contra");
-  if (!text) {
-    await sendMessageWithButtons(
-      config.ownerTelegramId,
-      "🟣 Сегодня пост на Contra. Свежего поста в канале за неделю нет — сначала пост в Untra.dev (/day), потом я сделаю английскую версию.",
-      planButtons("contra_post")
-    );
-    return;
+  const fmt = nextContraFormat(getAgentValue("contraLastFormat", null));
+  setAgentValue("contraLastFormat", fmt.key);
+  const recent = latestPost();
+  let idea = "";
+  try {
+    idea = String(
+      (await runOneShot({
+        role: "writer",
+        system: `Ты помогаешь Азизу (full-stack разработчик, Next.js/React/TS/Node/PostgreSQL, бренд Untra.dev) с постами на Contra. Ничего не выдумывай: опыт, проекты и цифры — только из стратегии и памяти ниже. Нет подходящего факта — предложи, что снять/сделать, а не придумывай результат.\n\n${readStrategy("contra")}\n\n${getMemoryForAgents()}`,
+        prompt: `Формат сегодня: «${fmt.name}» — ${fmt.hint}.${recent ? `\nПоследний пост канала (можно использовать как материал):\n<<<\n${recent.text.slice(0, 1500)}\n>>>` : ""}\nДай по-русски, коротко, строго так:\nТема: (одна строка)\nКрючок (англ., первая строка поста): ...\nЧто снять/приложить: ...\nЧерновик (англ., 3–6 коротких строк, без длинных тире, без ИИ-слов): ...\nВопрос в конце (англ.): ...\nТеги: 3–4`,
+        timeoutMs: 120_000,
+      })) || ""
+    ).trim();
+  } catch (err) {
+    console.warn("[planner] Идея поста Contra не сгенерировалась:", err.message);
   }
-  await sendMessageWithButtons(config.ownerTelegramId, `🟣 Пост для Contra (из последнего поста канала):\n\n${text}\n\nВыложи на contra.com → Create → Post.`, planButtons("contra_post"));
+  const body = idea
+    ? `🟣 Сегодня пост на Contra. Формат: ${fmt.name}.\n\n${idea}\n\nПубликуем только после твоего «ок». Через 45 мин после публикации напомню ответить на комменты — нажми ✅, когда выложишь.`
+    : `🟣 Сегодня пост на Contra. Формат: ${fmt.name} — ${fmt.hint}.\nФормула: крючок → 3–6 строк → видео/скрины → вопрос в конце. Напиши Рафаэлю «пост на контру», соберём вместе.`;
+  await sendMessageWithButtons(config.ownerTelegramId, body, planButtons("contra_post"));
+}
+
+async function contraPostReplies() {
+  await sendMessageWithButtons(
+    config.ownerTelegramId,
+    "🟣 Пост на Contra вышел ~45 мин назад. Загляни: ответь каждому, кто прокомментировал (лучше вопросом), и поставь лайк. Первый час решает охват.",
+    planButtons("contra_post_replies")
+  );
 }
 
 async function linkedinPost() {
@@ -187,19 +223,27 @@ async function linkedinPost() {
   await sendMessageWithButtons(config.ownerTelegramId, body, planButtons("linkedin_post"));
 }
 
-const CONTRA_TIPS = [
-  "ищи посты основателей про запуск продукта — спроси по делу или добавь нюанс из опыта",
-  "загляни в посты сильных дизайнеров: комментарий про то, как такой интерфейс ведёт себя в коде, заходит лучше «nice work»",
-  "посты про e-commerce и дашборды — твоя тема: одна реальная деталь из Noor или BUCHET.UZ",
-  "посты про Telegram и Mini Apps — там почти никто не комментирует со знанием дела",
-  "отвечай тем, кто ответил тебе вчера — диалог в комментариях заметнее всего",
+// Комментарии Contra (playbooks/contra.md, утверждено 07.10): 3 в день по типам + угол дня.
+export const CONTRA_COMMENT_ANGLES = [
+  "под концептом дизайнера: как этот hover/анимация поведёт себя на телефоне и как бы ты это сделал",
+  "под концептом дизайнера: что в этом макете будет сложнее всего сверстать и почему (адаптив, длинные тексты, пустые состояния)",
+  "под свежим постом про Frontend/Next.js: реальный нюанс из Noor или Telegram Store + вопрос автору",
+  "под постом фаундера/агентства о запуске: вопрос про то, кто будет редактировать контент и как",
+  "под постом про дашборды/админки: деталь из Noor (роли, фильтры, real-time) + вопрос",
+  "ответь тем, кто ответил тебе вчера — живой диалог заметнее всего, при диалоге подпишись",
 ];
 
 async function contraComments() {
-  const tip = CONTRA_TIPS[new Date().getDate() % CONTRA_TIPS.length];
+  const angle = CONTRA_COMMENT_ANGLES[new Date().getDate() % CONTRA_COMMENT_ANGLES.length];
   await sendMessageWithButtons(
     config.ownerTelegramId,
-    `🟣 Contra: 3–5 комментариев сегодня (10 минут).\nСовет дня: ${tip}.\nФормула: опыт / нюанс / вопрос по делу, 1–3 предложения, без «great post».`,
+    [
+      "🟣 Contra: 3 комментария сегодня (~10 мин).",
+      "• 2 — под концептами дизайнеров (сайты/приложения): одна техническая мысль о реализации.",
+      "• 1 — под свежим постом Frontend/UI (первые 1–2 часа) или постом фаундера/агентства.",
+      `Угол дня: ${angle}.`,
+      "Правила: 1–3 предложения, без «great work», без ссылок; вопрос в конце, чтобы автор ответил. Нечего добавить — пропусти пост.",
+    ].join("\n"),
     planButtons("contra_comments")
   );
 }
@@ -268,7 +312,8 @@ function weeklyReportText() {
     if (k === "brief" || k === "weekly" || k === "evening_plan") continue;
     lines.push(`• ${label[k] || k}: сделано ${v.done}${v.skip ? `, пропущено ${v.skip}` : ""}`);
   }
-  lines.push("", "Цифры для таблицы в 00_STATUS.md: заявки, созвоны и оплаты из CRM — запиши сам, у бота их нет.");
+  lines.push("", "Contra (посмотри и скажи Рафаэлю): score, подписчики, просмотры постов, ответы на комменты, отклики/ответы. Какой пост сработал лучше всего?");
+  lines.push("Цифры заявок, созвонов и оплат — из CRM.");
   return lines.join("\n");
 }
 
@@ -283,6 +328,7 @@ const RUNNERS = {
   tg_post: tgPostReminder,
   contra_post: contraPost,
   contra_comments: contraComments,
+  contra_post_replies: contraPostReplies,
   linkedin_post: linkedinPost,
   linkedin_comments: linkedinComments,
   reddit: redditTask,
@@ -300,6 +346,7 @@ let running = false;
 export function plannerTick() {
   if (!config.plannerEnabled || running) return;
   const now = tashkentNow();
+  if (isQuietTime(now)) return;
   const fired = getAgentValue("plannerFired", {});
   const due = TASKS.filter((t) => shouldFire(t, now, fired));
   // Отложенные «⏰ Позже».
@@ -348,6 +395,7 @@ export async function handlePlanCallback(query, action, key) {
   }
   if (action === "d") {
     logPlan(key, "done");
+    if (key === "contra_post") updateAgentValue("plannerSnoozes", [], (list) => list.push({ key: "contra_post_replies", at: Date.now() + 45 * 60_000 }));
     await editMessageText(chatId, messageId, `${text}\n\n✅ Сделано.`);
     return "Красава";
   }

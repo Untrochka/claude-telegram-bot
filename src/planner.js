@@ -91,8 +91,8 @@ export const TASKS = [
   { key: "physics_rem", label: "Физика", days: [1, 3, 5], time: "14:15", platform: null, hidden: true, window: 15 },
   { key: "math_rem", label: "Математика", days: [1, 3, 5], time: "16:00", platform: null, hidden: true, window: 20 },
   { key: "english_rem", label: "Английский", days: [2, 4, 6], time: "15:15", platform: null, hidden: true, window: 15 },
-  { key: "calm_1", label: "Спокойное сообщение", days: [1, 2, 3, 4, 5, 6], time: "12:30", platform: null, hidden: true, window: 60 },
-  { key: "calm_2", label: "Спокойное сообщение", days: [1, 2, 3, 4, 5, 6], time: "19:30", platform: null, hidden: true, window: 60 },
+  { key: "calm_1", label: "Спокойное сообщение", days: [0, 1, 2, 3, 4, 5, 6], time: "12:30", platform: null, hidden: true, window: 60 },
+  { key: "calm_2", label: "Спокойное сообщение", days: [0, 1, 2, 3, 4, 5, 6], time: "19:30", platform: null, hidden: true, window: 60 },
 ];
 const WINDOW_MIN = 180;
 // Тихие часы: после 23:30 и до 08:00 бот ничего не напоминает (стратегия Contra 07.10).

@@ -340,19 +340,21 @@ async function handleBusinessMessage(msg) {
     } catch (err) {
       console.error(`[bot] Не смог разобрать медиа в чате ${chatId}:`, err.message);
       if (!text) {
-        await notifyNonTextMessage(chatId, msg, err instanceof MediaError ? err.message : "ошибка, см. логи");
+        if (config.clientDrafts) await notifyNonTextMessage(chatId, msg, err instanceof MediaError ? err.message : "ошибка, см. логи");
         return;
       }
     }
   }
 
   if (!incoming) {
-    await notifyNonTextMessage(chatId, msg);
+    if (config.clientDrafts) await notifyNonTextMessage(chatId, msg);
     return;
   }
 
   console.log(`[bot] Новое сообщение в чате ${chatId}${mediaKind ? ` (${mediaKind})` : ""}: ${incoming.slice(0, 80)}`);
   pushHistory(chatId, "customer", incoming);
+  // Черновики и автоответы выключены (CLIENT_DRAFTS=true включает): только пишем в историю.
+  if (!config.clientDrafts) return;
   addToBatch(chatId, connectionId, incoming, images, Boolean(mediaKind));
 }
 

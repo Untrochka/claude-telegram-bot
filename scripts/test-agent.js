@@ -89,7 +89,7 @@ check("тихие часы 23:45", isQuietTime({ time: "23:45" }) && isQuietTime
 check("формат Contra по кругу", nextContraFormat(null).key === CONTRA_POST_FORMATS[0].key && nextContraFormat(CONTRA_POST_FORMATS.at(-1).key).key === CONTRA_POST_FORMATS[0].key && nextContraFormat("figma_to_code").key !== "figma_to_code");
 check("комменты Contra в 11:30", TASKS.find((t) => t.key === "contra_comments").time === "11:30");
 check("showoff отключён", !TASKS.some((t) => t.key === "showoff"));
-check("воскресенье: ничего", TASKS.every((t) => !t.days.includes(0)));
+check("воскресенье: только calm", TASKS.filter((t) => t.days.includes(0)).every((t) => t.key.startsWith("calm_")));
 check("суббота: только английский и calm", TASKS.filter((t) => t.days.includes(6)).every((t) => ["english_rem", "calm_1", "calm_2"].includes(t.key)));
 check("всё заканчивается до 21:00", TASKS.every((t) => toMinTest(t.time) + (t.window ?? 180) <= 21 * 60));
 check("weekly в понедельник 11:05", TASKS.find((t) => t.key === "weekly").days.join() === "1" && TASKS.find((t) => t.key === "weekly").time === "11:05");

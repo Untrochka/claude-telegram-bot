@@ -28,7 +28,11 @@ const autoSendIntents = (process.env.AUTO_SEND_INTENTS || "refusal,soft_no,price
   .map((s) => s.trim())
   .filter(Boolean);
 
+// CLIENT_DRAFTS=true — снова делать черновики/автоответы на сообщения клиентов (по умолчанию выключено).
+const clientDrafts = (process.env.CLIENT_DRAFTS || "false").trim().toLowerCase() === "true";
+
 export const config = {
+  clientDrafts,
   botToken: required("BOT_TOKEN"),
   ownerTelegramId,
   claudeMode: (process.env.CLAUDE_MODE || "subscription").trim(), // "subscription" | "api"

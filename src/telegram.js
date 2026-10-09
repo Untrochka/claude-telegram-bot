@@ -47,7 +47,7 @@ export async function sendBusinessMessage(connectionId, chatId, text) {
 }
 
 // Лог сообщений бота владельцу (карточки, отчёты, напоминания) — чтобы
-// Рафаэль знал, что бот присылал «сам». Ставится из bot.js.
+// Джарвис знал, что бот присылал «сам». Ставится из bot.js.
 let ownerLogger = null;
 export function setOwnerLogger(fn) {
   ownerLogger = fn;
@@ -155,7 +155,7 @@ export async function sendChatAction(chatId, action = "typing") {
   return call("sendChatAction", { chat_id: chatId, action });
 }
 
-// Редактирование с HTML-разметкой (стриминг ответа Рафаэля). Без разметки,
+// Редактирование с HTML-разметкой (стриминг ответа Джарвиса). Без разметки,
 // если Telegram её не принял. "message is not modified" — не ошибка.
 export async function editHtmlMessage(chatId, messageId, html, plainFallback) {
   try {
@@ -195,8 +195,8 @@ export async function deleteMessage(chatId, messageId) {
   return call("deleteMessage", { chat_id: chatId, message_id: messageId });
 }
 
-// Без записи в журнал Рафаэля (прогресс очереди, полный список сообщений):
-// Рафаэлю идёт только итог, тексты и промежуточные правки ему не нужны.
+// Без записи в журнал Джарвиса (прогресс очереди, полный список сообщений):
+// Джарвису идёт только итог, тексты и промежуточные правки ему не нужны.
 export async function sendMessageQuiet(chatId, text) {
   return call("sendMessage", { chat_id: chatId, text });
 }

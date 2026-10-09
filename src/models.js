@@ -1,5 +1,5 @@
 // Модель у бота одна — Opus 5.5 (решение Азиза). По ролям меняется только
-// effort (сколько модель думает): по умолчанию low, Рафаэль и писатель — medium; поверх — выбор
+// effort (сколько модель думает): по умолчанию low, Джарвис и писатель — medium; поверх — выбор
 // владельца через /model, хранится в state.json и переживает деплой.
 import { config } from "./config.js";
 import { getAgentValue, setAgentValue } from "./state.js";
@@ -8,19 +8,19 @@ export const MODEL = config.claudeModel;
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 
 export const ROLES = {
-  raphael: "Рафаэль (личный чат)",
+  raphael: "Джарвис (личный чат)",
   day: "/day — разбор дня",
   clients: "Автоответчик клиентам",
   filter: "Фильтр постов (подходит ли для коммента)",
   writer: "Писатель комментариев и адаптаций постов",
-  reader: "Сжатие длинных переписок для Рафаэля",
+  reader: "Сжатие длинных переписок для Джарвиса",
 };
 
 export function getModel() {
   return MODEL;
 }
 
-// Там, где важно внимательно слушать Мастера (Рафаэль, правки комментов), —
+// Там, где важно внимательно слушать Мастера (Джарвис, правки комментов), —
 // medium: чуть дороже за вызов, но меньше переделок. Остальное — low.
 const ROLE_DEFAULTS = { raphael: "medium", writer: "medium" };
 
@@ -56,7 +56,7 @@ export function modelsText() {
     "",
     `Сменить: /model <роль> <${EFFORTS.join("|")}>`,
     "Например: /model writer high",
-    "Везде сразу: /model all medium · По умолчанию: /model reset (Рафаэль и писатель — medium, остальные — low)",
+    "Везде сразу: /model all medium · По умолчанию: /model reset (Джарвис и писатель — medium, остальные — low)",
     "low — быстро и дёшево, high/xhigh — думает дольше и аккуратнее, max — максимум (медленно).",
   ].join("\n");
 }

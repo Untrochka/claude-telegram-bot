@@ -477,7 +477,7 @@ ${note.text}`, [
   ]);
 }
 
-// --- Изменения системы untra и CRM от Рафаэля: только после ✅ Мастера ---
+// --- Изменения системы untra и CRM от Джарвиса: только после ✅ Мастера ---
 async function sendUntraWriteCard(chatId, w) {
   let before = "";
   try {
@@ -486,7 +486,7 @@ async function sendUntraWriteCard(chatId, w) {
   const id = createDraft({ kind: "untra_write", path: w.path, content: w.content });
   const preview = w.content.length > 3000 ? w.content.slice(0, 3000) + "\n…" : w.content;
   const sizeNote = before ? `было ${before.length} → станет ${w.content.length} символов` : "новый файл";
-  await sendMessageWithButtons(chatId, `📝 Рафаэль хочет изменить ${w.path} (${sizeNote}):\n\n${preview}`, [
+  await sendMessageWithButtons(chatId, `📝 Джарвис хочет изменить ${w.path} (${sizeNote}):\n\n${preview}`, [
     [
       { text: "✅ Записать", callback_data: `uw:y:${id}` },
       { text: "🗑 Не надо", callback_data: `uw:n:${id}` },
@@ -708,14 +708,14 @@ async function handleChatsCommand(chatId) {
     const name = s.title || "без имени";
     return `${kindIcon[s.kind] || "•"} ${name} #${s.chatId} — ${s.count} сообщ., последнее ${formatAgo(s.lastTs)} (${who}): ${s.lastText.replace(/\s+/g, " ").slice(0, 60)}`;
   });
-  const text = `Все чаты, которые видел бот (${summaries.length}):\n\n${lines.join("\n")}\n\nНажми на чат — Рафаэль прочитает переписку и скажет, на чём остановились.`;
+  const text = `Все чаты, которые видел бот (${summaries.length}):\n\n${lines.join("\n")}\n\nНажми на чат — Джарвис прочитает переписку и скажет, на чём остановились.`;
   const chunks = splitForTelegram(text);
   for (const chunk of chunks.slice(0, -1)) await sendMessage(chatId, chunk);
   const open = summaries.slice(0, 12).map((s) => cmdBtn(`${kindIcon[s.kind] || "•"} ${(s.title || String(s.chatId)).slice(0, 22)}`, `/chat ${s.chatId}`));
   await sendMessageWithButtons(chatId, chunks[chunks.length - 1], grid(open, 2));
 }
 
-// /chat <id или имя> — то же, что спросить Рафаэля: он сам подгрузит переписку.
+// /chat <id или имя> — то же, что спросить Джарвиса: он сам подгрузит переписку.
 async function handleChatCommand(ownerChatId, text) {
   const target = text.replace(/^\/chat\s*/i, "").trim();
   if (!target) {
@@ -817,7 +817,7 @@ async function runContentTurn(chatId, incomingText, images = []) {
 async function stopDay(chatId) {
   setContentMode(chatId, false);
   clearSession(`${CONTENT_CHAT_PREFIX}${chatId}`);
-  await sendMessage(chatId, "Вышел из разбора дня. Дальше отвечает Рафаэль.");
+  await sendMessage(chatId, "Вышел из разбора дня. Дальше отвечает Джарвис.");
 }
 
 async function handleDayCommand(chatId, text) {
@@ -847,7 +847,7 @@ async function handleMemoryCommand(chatId, text) {
       return;
     }
     const n = addMemory(rest);
-    await sendMessage(chatId, `Запомнил (#${n}). Рафаэль и /day будут это знать.`);
+    await sendMessage(chatId, `Запомнил (#${n}). Джарвис и /day будут это знать.`);
     return;
   }
   if (command === "/forget" && rest) {
@@ -892,7 +892,7 @@ async function handleImport(chatId, doc) {
       for (const m of c.messages) if (m.role === "azizhon" && m.text.length < 300 && !m.text.startsWith("[")) addStyleSample(m.text);
       lines.push(`• ${c.title || "без имени"} #${c.chatId}: +${c.messages.length} (всего ${total})`);
     }
-    const text = `Загрузил ${chats.length} чат(ов):\n${lines.join("\n")}\n\nТеперь можно спрашивать Рафаэля про эти переписки.`;
+    const text = `Загрузил ${chats.length} чат(ов):\n${lines.join("\n")}\n\nТеперь можно спрашивать Джарвиса про эти переписки.`;
     for (const chunk of splitForTelegram(text)) await sendMessage(chatId, chunk);
   } catch (err) {
     stopTyping();
@@ -909,7 +909,7 @@ async function checkReminders() {
   }
 }
 
-// Ответ Рафаэля: markdown-lite -> HTML Telegram, длинное — несколькими сообщениями.
+// Ответ Джарвиса: markdown-lite -> HTML Telegram, длинное — несколькими сообщениями.
 async function sendFormatted(chatId, md) {
   for (const chunk of splitForTelegram(md)) {
     await sendHtmlMessage(chatId, toTelegramHtml(chunk), chunk);
@@ -947,7 +947,7 @@ function keepTyping(chatId) {
   return () => clearInterval(timer);
 }
 
-// Действия, которые запускает Рафаэль ([[ACTION: …]]) или локальный роутер
+// Действия, которые запускает Джарвис ([[ACTION: …]]) или локальный роутер
 // простых фраз (без Claude). Отправки клиентам здесь нет — только кнопкой.
 async function runRaphaelAction(chatId, { name, arg = "" }) {
   try {
@@ -1032,7 +1032,7 @@ async function secretaryTurn(chatId, text, images = []) {
       pushHistory(chatKey, "assistant", reply);
     } else {
       await streamer.discard();
-      if (!rewrites?.length && !notes?.length) console.warn("[bot] Пустой ответ от Рафаэля, пропускаю отправку.");
+      if (!rewrites?.length && !notes?.length) console.warn("[bot] Пустой ответ от Джарвиса, пропускаю отправку.");
     }
     for (const note of notes || []) await sendStrategyNoteCard(chatId, note);
     for (const w of writes || []) await sendUntraWriteCard(chatId, w);
@@ -1047,7 +1047,7 @@ async function secretaryTurn(chatId, text, images = []) {
   } catch (err) {
     stopTyping();
     await streamer.discard();
-    console.error(`[bot] Ошибка Рафаэля:`, err.message);
+    console.error(`[bot] Ошибка Джарвиса:`, err.message);
     await sendMessage(chatId, "Не смог ответить — ошибка на моей стороне, см. логи.");
   }
 }
@@ -1209,7 +1209,7 @@ const DRAFT_KIND_LABEL = { business: "ответ клиенту", channel_post: 
 async function consumePendingRewrite(chatId, text) {
   const pending = getAgentValue("pendingRewrite", null);
   if (!pending || text.startsWith("/") || Date.now() - pending.ts > 15 * 60_000) return false;
-  // Вопрос («почему так?», «а это норм?») — не правка: отдаём Рафаэлю, слот не трогаем.
+  // Вопрос («почему так?», «а это норм?») — не правка: отдаём Джарвису, слот не трогаем.
   if (isQuestionText(text) && !isCancelText(text)) return false;
   setAgentValue("pendingRewrite", null);
   const stopTyping = keepTyping(chatId);
@@ -1282,7 +1282,7 @@ async function handlePersonalMessage(msg) {
   if (!images.length && (await consumePendingRewrite(chatId, text))) return;
 
   // Ответ (reply) на сообщение бота: на карточку черновика — это правка черновика;
-  // на любое другое — даём Рафаэлю контекст, на что именно ответил Мастер.
+  // на любое другое — даём Джарвису контекст, на что именно ответил Мастер.
   const replied = msg.reply_to_message;
   // «отмени», «бро отмен», «стоп» — отмена отправки комментария, без Claude.
   if (!images.length && isCancelText(text)) {
@@ -1303,7 +1303,7 @@ async function handlePersonalMessage(msg) {
   }
   if (replied && !text.startsWith("/")) {
     const draftId = findDraftByCardMessage(replied.message_id);
-    // Вопрос к карточке («актуален?», «?») — это не правка, отдаём Рафаэлю с контекстом.
+    // Вопрос к карточке («актуален?», «?») — это не правка, отдаём Джарвису с контекстом.
     const isQuestion = isQuestionText(text);
     if (draftId && !isQuestion) {
       const stopTyping = keepTyping(chatId);
@@ -1322,11 +1322,13 @@ async function handlePersonalMessage(msg) {
       : card
         ? `[Мастер отвечает на карточку черновика #${draftId} (${DRAFT_KIND_LABEL[card.kind] || card.kind}${card.customerText ? `; клиент написал: «${card.customerText.slice(0, 500)}»` : ""}). Текст черновика: «${(card.text || "").slice(0, 1200)}». Переписать — [[REWRITE: ${draftId} | …]].]`
         : quoted
-        ? `[Мастер отвечает на ${fromBot ? "сообщение бота" : "своё сообщение"}:\n«${quoted}»]`
+        ? fromBot
+          ? `(Ответ на твоё сообщение: "${quoted}")`
+          : `[Мастер отвечает на своё сообщение:\n«${quoted}»]`
         : "";
     if (ctx) text = `${ctx}\n\n${text}`;
   } else if ((msg.forward_origin || msg.forward_from) && !images.length) {
-    // Пересланная карточка — даём Рафаэлю понять, что это за коммент.
+    // Пересланная карточка — даём Джарвису понять, что это за коммент.
     const comment = findCommentByText(text);
     if (comment) {
       text = `[Мастер переслал карточку комментария #${comment.id} (@${comment.username}, ${comment.status}). Пост: «${(comment.postText || "").slice(0, 600)}» Комментарий: «${comment.text}»]\n\nЧто скажешь про этот комментарий?`;
@@ -1337,7 +1339,7 @@ async function handlePersonalMessage(msg) {
 
   switch (command) {
     case "/start":
-      for (const chunk of splitForTelegram(`Рафаэль на связи. Пиши как есть — текстом, голосом, скрином. Вот все команды:\n\n${buildHelpText()}`)) await sendMessage(chatId, chunk);
+      for (const chunk of splitForTelegram(`Джарвис на связи. Пиши как есть — текстом, голосом, скрином. Вот все команды:\n\n${buildHelpText()}`)) await sendMessage(chatId, chunk);
       await sendMessageWithButtons(chatId, "Быстрые кнопки — жми, печатать не надо:", QUICK_MENU);
       return;
     case "/help":
@@ -1411,7 +1413,7 @@ async function handlePersonalMessage(msg) {
     return;
   }
 
-  // Простые фразы — сами, без Claude (экономим лимиты). Рафаэль увидит это в журнале.
+  // Простые фразы — сами, без Claude (экономим лимиты). Джарвис увидит это в журнале.
   const route = !images.length && !msg.reply_to_message ? localRoute(text) : null;
   if (route) {
     logEvent(`Мастер: ${text.slice(0, 120)}`);
@@ -1425,7 +1427,7 @@ async function handlePersonalMessage(msg) {
 }
 
 // Личный чат обрабатываем в фоне (по очереди внутри чата), чтобы долгий
-// ответ Рафаэля с поиском в интернете не держал long polling и клиентов.
+// ответ Джарвиса с поиском в интернете не держал long polling и клиентов.
 const personalQueues = new Map();
 function enqueuePersonal(msg) {
   const key = msg.chat.id;
@@ -1501,11 +1503,11 @@ async function registerCommands() {
 }
 
 registerCommands();
-// 21:45 — Рафаэль сам готовит план на завтра; NOW.md меняется только после ✅.
+// 20:45 — Джарвис сам готовит план на завтра; NOW.md меняется только после ✅.
 setEveningPlanRunner(() =>
   secretaryTurn(
     config.ownerTelegramId,
-    "[Автозадача 21:45] Подготовь план на завтра. Прочитай [[UNTRA: state/NOW.md]], [[CRM: тёплые]] и [[CRM: статус]], учти моё расписание и приоритеты. " +
+    "[Автозадача 20:45] Подготовь план на завтра. Прочитай [[UNTRA: state/NOW.md]], [[CRM: тёплые]] и [[CRM: статус]], учти моё расписание и приоритеты. " +
       "Потом коротко напиши мне план (что сделать мне самому, что делают ИИ, кому напомнить, сколько новых и в каких сегментах) " +
       "и предложи обновлённый state/NOW.md целиком через UNTRA_WRITE, с разделом «## План на <завтрашняя дата>» в начале."
   )

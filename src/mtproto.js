@@ -108,7 +108,7 @@ export async function findDialogs(query) {
   return list.filter((d) => d.title.toLowerCase().includes(q) || d.username.toLowerCase().includes(q));
 }
 
-// Короткий список свежих диалогов для системного промпта Рафаэля.
+// Короткий список свежих диалогов для системного промпта Джарвиса.
 export async function recentDialogsText(n = 15) {
   if (!ready) return "";
   try {

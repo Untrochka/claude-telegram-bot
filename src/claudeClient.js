@@ -70,14 +70,14 @@ function buildSecretaryPrompt(history, incomingText) {
 // - автоответчик клиентам и /day — БЕЗ инструментов (--allowedTools "" +
 //   --permission-mode dontAsk): промпт приходит от постороннего человека в
 //   Telegram, никакого доступа к файлам/командам/сети это дать не должно;
-// - Рафаэль (личный чат, пишет только владелец) — только WebSearch и WebFetch:
+// - Джарвис (личный чат, пишет только владелец) — только WebSearch и WebFetch:
 //   интернет, но без файлов и команд. cwd всё равно пустая песочница.
 //
 // Картинки (фото, кадры видео) передаются прямо в сообщении через
 // --input-format stream-json — это не файлы на диске и не инструменты.
 // stream-json на входе требует stream-json на выходе: ответ — строка type=result.
 //
-// Сессии (--resume): Рафаэль и /day продолжают один разговор, как обычный чат
+// Сессии (--resume): Джарвис и /day продолжают один разговор, как обычный чат
 // с Claude, — CLI сам хранит его в ~/.claude и сжимает, когда он длинный.
 const WEB_TOOLS = "WebSearch,WebFetch";
 
@@ -373,7 +373,7 @@ export async function generateReply(history, incomingText, images = [], ctx = {}
   return parseTriagedReply(raw);
 }
 
-// Рафаэль: одна длинная сессия на чат + интернет. systemText собирает bot.js
+// Джарвис: одна длинная сессия на чат + интернет. systemText собирает bot.js
 // (персона + знания + память + список чатов). fallbackPrompt — для режима api,
 // где сессий нет: там история передаётся текстом, как раньше.
 // -> { text, sessionId }

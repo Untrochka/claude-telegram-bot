@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// npm run test:raphael — Рафаэль без Telegram, на временном state.json:
+// npm run test:raphael — Джарвис без Telegram, на временном state.json:
 // 1) импорт экспорта Telegram Desktop (офлайн);
 // 2) память сессии: факт из первого сообщения помнит во втором;
 // 3) «что писал X?» — сам подгружает переписку по имени и отвечает по ней;

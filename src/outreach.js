@@ -3,7 +3,7 @@
 // 1) scan_clients: папка Telegram «Клиенты» → по каждому чату последние 2–3 сообщения
 //    и «прочитано ли наше» → статус по таблице → сравнение с CRM. Чаты без изменений
 //    с прошлого скана (тот же последний id и то же «прочитано») не читаются вообще.
-//    Рафаэлю — один компактный блок; карточку CRM_BATCH бот сам шлёт Мастеру.
+//    Джарвису — один компактный блок; карточку CRM_BATCH бот сам шлёт Мастеру.
 // 2) [[CRM_BATCH: [...] ]] — пачка записей в CRM одной карточкой ✅/🗑.
 // 3) [[SEND_QUEUE: [...] ]] — очередь личных сообщений от аккаунта Мастера после ✅:
 //    пауза 40–90 с, crm_dup перед каждым, crm_log после, стоп на FLOOD/PEER_FLOOD,
@@ -127,7 +127,7 @@ async function withFlood(fn) {
 }
 
 // ---------- Скан папки ----------
-// -> { text: блок для Рафаэля/Мастера, batch: [CRM_LOG-объекты] }
+// -> { text: блок для Джарвиса/Мастера, batch: [CRM_LOG-объекты] }
 export async function scanClients(folder = DEFAULT_FOLDER, { onStatus } = {}) {
   if (!isMtprotoReady()) return { text: "scan_clients: MTProto не подключён — скан невозможен.", batch: [] };
   const name = String(folder || "").trim() || DEFAULT_FOLDER;
@@ -185,7 +185,7 @@ export async function scanClients(folder = DEFAULT_FOLDER, { onStatus } = {}) {
   return { text: parts.join("\n"), batch: batch.slice(0, MAX_BATCH), batchTotal: batch.length };
 }
 
-// Скан для Мастера/Рафаэля: карточку CRM_BATCH бот шлёт сам, Рафаэлю — только блок.
+// Скан для Мастера/Джарвиса: карточку CRM_BATCH бот шлёт сам, Джарвису — только блок.
 export async function runScanForOwner(chatId, folder, { onStatus } = {}) {
   let res;
   try {
@@ -442,7 +442,7 @@ async function runQueue(chatId, progressId, items) {
   const rest = items.slice(i).map(who);
   await progress(stopReason ? `⛔ ${stopReason}` : "✅ Готово");
   setAgentValue("sendQueueLast", { at: Date.now(), sent, skipped, errors, rest });
-  // Одна строка — она же уходит в журнал Рафаэля (без текстов сообщений).
+  // Одна строка — она же уходит в журнал Джарвиса (без текстов сообщений).
   await sendMessage(
     chatId,
     `Очередь: ушло ${sent} / пропущено ${skipped} / ошибки ${errors.length}${stopReason ? ` · стоп: ${stopReason}` : ""}${rest.length ? ` · не отправлено ${rest.length}: ${rest.slice(0, 20).join(", ")}${rest.length > 20 ? "…" : ""}` : ""}${errors.length ? `\nОшибки: ${errors.slice(0, 5).join("; ")}` : ""}`

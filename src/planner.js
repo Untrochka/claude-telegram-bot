@@ -1,7 +1,7 @@
 import { readSystemFile } from "./untra/store.js";
 // Планировщик: напоминает про посты и комментарии на всех площадках по
 // расписанию из стратегий (время Ташкента, вне школы и курсов), готовит
-// адаптации постов для Contra/LinkedIn, утренняя сводка и воскресный отчёт.
+// адаптации постов для Contra/LinkedIn, утренняя сводка и недельный отчёт (Пн).
 // Всё только владельцу. Кнопки: ✅ Сделал / ⏰ Позже (+2 ч) / 🙅 Пропускаю.
 import { config } from "./config.js";
 import { runOneShot } from "./claudeClient.js";
@@ -18,6 +18,7 @@ import { sendMessage, sendMessageWithButtons, editMessageText } from "./telegram
 import { pendingCommentDrafts, discoveryReportText, commentsActive } from "./comments.js";
 import { runRedditDigest } from "./reddit.js";
 import { isMtprotoReady } from "./mtproto.js";
+import { pickCalm } from "./calm.js";
 
 // Память Мастера — через провайдера (team.js импортирует planner.js).
 let memoryProvider = () => "";
@@ -69,17 +70,29 @@ const toMin = (hhmm) => {
 // days: 0=Вс … 6=Сб. window — сколько минут после времени задача ещё может
 // сработать (если бот был выключен). platform — для отчёта.
 export const TASKS = [
-  { key: "brief", label: "Утренняя сводка", days: [0, 1, 2, 3, 4, 5, 6], time: "11:00", platform: null },
-  { key: "tg_post", label: "Пост в Untra.dev", days: [2, 4, 6], time: "13:00", platform: "telegram" },
-  { key: "contra_post", label: "Пост на Contra", days: [2, 4, 6], time: "13:05", platform: "contra" },
-  { key: "reddit", label: "Reddit: ответы на вопросы", days: [2, 4, 6], time: "18:00", platform: "reddit" },
-  { key: "showoff", label: "Reddit Showoff Saturday", days: [6], time: "12:00", platform: "reddit", firstWeekOfMonth: true },
+  // Антивыгорание: Вс — ничего; Сб — без работы; работа не позже 21:00.
+  // hidden — не показывать в утренней сводке; window — сколько минут задача ещё может сработать.
+  { key: "brief", label: "Утренняя сводка", days: [1, 2, 3, 4, 5], time: "11:00", platform: null },
+  { key: "tg_post", label: "Пост в Untra.dev", days: [2, 4], time: "13:00", platform: "telegram" },
+  { key: "contra_post", label: "Пост на Contra", days: [2, 4], time: "13:05", platform: "contra" },
+  // reddit выключен: по стратегии 10.2026 только LinkedIn и Contra.
   { key: "linkedin_post", label: "Пост в LinkedIn", days: [5], time: "13:00", platform: "linkedin", evenWeeks: true },
-  { key: "linkedin_comments", label: "Комментарии в LinkedIn", days: [3], time: "21:35", platform: "linkedin" },
-  { key: "contra_comments", label: "Комментарии на Contra (3 шт.)", days: [0, 1, 2, 3, 4, 5, 6], time: "11:30", platform: "contra" },
+  { key: "linkedin_comments", label: "Комментарии в LinkedIn", days: [3], time: "13:30", platform: "linkedin" },
+  { key: "contra_comments", label: "Комментарии на Contra (3 шт.)", days: [1, 2, 3, 4, 5], time: "11:30", platform: "contra" },
+  { key: "contra_foryou_1", label: "Contra: For you", days: [1, 2, 3, 4, 5], time: "08:05", platform: "contra", hidden: true, window: 30 },
+  { key: "contra_foryou_2", label: "Contra: For you", days: [1, 2, 3, 4, 5], time: "11:00", platform: "contra", hidden: true, window: 30 },
+  { key: "contra_foryou_3", label: "Contra: For you", days: [1, 2, 3, 4, 5], time: "14:00", platform: "contra", hidden: true, window: 30 },
+  { key: "contra_foryou_4", label: "Contra: For you", days: [2, 4], time: "18:00", platform: "contra", hidden: true, window: 30 },
+  { key: "contra_foryou_5", label: "Contra: For you", days: [1, 2, 3, 4, 5], time: "20:40", platform: "contra", hidden: true, window: 15 },
   { key: "discovery_report", label: "Отчёт по каналам для комментариев", days: [1], time: "12:00", platform: null },
-  { key: "weekly", label: "Воскресный отчёт", days: [0], time: "20:00", platform: null },
-  { key: "evening_plan", label: "План на завтра", days: [0, 1, 2, 3, 4, 5, 6], time: "21:45", platform: null },
+  { key: "weekly", label: "Недельный отчёт", days: [1], time: "11:05", platform: null },
+  { key: "evening_plan", label: "План на завтра", days: [1, 2, 3, 4], time: "20:45", platform: null, window: 15 },
+  { key: "school_rem", label: "Школа", days: [1, 2, 3, 4, 5], time: "08:15", platform: null, hidden: true, window: 15 },
+  { key: "physics_rem", label: "Физика", days: [1, 3, 5], time: "14:15", platform: null, hidden: true, window: 15 },
+  { key: "math_rem", label: "Математика", days: [1, 3, 5], time: "16:00", platform: null, hidden: true, window: 20 },
+  { key: "english_rem", label: "Английский", days: [2, 4, 6], time: "15:45", platform: null, hidden: true, window: 15 },
+  { key: "calm_1", label: "Спокойное сообщение", days: [1, 2, 3, 4, 5, 6], time: "12:30", platform: null, hidden: true, window: 60 },
+  { key: "calm_2", label: "Спокойное сообщение", days: [1, 2, 3, 4, 5, 6], time: "19:30", platform: null, hidden: true, window: 60 },
 ];
 const WINDOW_MIN = 180;
 // Тихие часы: после 23:30 и до 08:00 бот ничего не напоминает (стратегия Contra 07.10).
@@ -99,7 +112,7 @@ export function shouldFire(task, now, firedMap, date = new Date()) {
   if (!taskDueToday(task, now, date)) return false;
   if (firedMap[`${task.key}:${now.date}`]) return false;
   const diff = toMin(now.time) - toMin(task.time);
-  return diff >= 0 && diff <= WINDOW_MIN;
+  return diff >= 0 && diff <= (task.window ?? WINDOW_MIN);
 }
 
 function markFired(key, date) {
@@ -203,7 +216,7 @@ async function contraPost() {
   }
   const body = idea
     ? `🟣 Сегодня пост на Contra. Формат: ${fmt.name}.\n\n${idea}\n\nПубликуем только после твоего «ок». Через 45 мин после публикации напомню ответить на комменты — нажми ✅, когда выложишь.`
-    : `🟣 Сегодня пост на Contra. Формат: ${fmt.name} — ${fmt.hint}.\nФормула: крючок → 3–6 строк → видео/скрины → вопрос в конце. Напиши Рафаэлю «пост на контру», соберём вместе.`;
+    : `🟣 Сегодня пост на Contra. Формат: ${fmt.name} — ${fmt.hint}.\nФормула: крючок → 3–6 строк → видео/скрины → вопрос в конце. Напиши Джарвису «пост на контру», соберём вместе.`;
   await sendMessageWithButtons(config.ownerTelegramId, body, planButtons("contra_post"));
 }
 
@@ -248,6 +261,10 @@ async function contraComments() {
   );
 }
 
+async function contraForYou() {
+  await sendMessage(config.ownerTelegramId, "Contra: загляни в «For you» — новые заказы (2–3 минуты, откликнуться только на подходящие).");
+}
+
 async function linkedinComments() {
   await sendMessageWithButtons(
     config.ownerTelegramId,
@@ -277,7 +294,7 @@ async function showoffReminder() {
 
 export function morningBriefText() {
   const now = tashkentNow();
-  const today = TASKS.filter((t) => !["brief", "weekly", "discovery_report", "evening_plan"].includes(t.key) && taskDueToday(t, now));
+  const today = TASKS.filter((t) => !t.hidden && !["brief", "weekly", "discovery_report", "evening_plan"].includes(t.key) && taskDueToday(t, now));
   const lines = [`☀️ План на сегодня (${now.date})`];
   if (today.length) for (const t of today) lines.push(`• ${t.time} — ${t.label}`);
   else lines.push("• по площадкам сегодня ничего обязательного");
@@ -312,7 +329,7 @@ function weeklyReportText() {
     if (k === "brief" || k === "weekly" || k === "evening_plan") continue;
     lines.push(`• ${label[k] || k}: сделано ${v.done}${v.skip ? `, пропущено ${v.skip}` : ""}`);
   }
-  lines.push("", "Contra (посмотри и скажи Рафаэлю): score, подписчики, просмотры постов, ответы на комменты, отклики/ответы. Какой пост сработал лучше всего?");
+  lines.push("", "Contra (посмотри и скажи Джарвису): score, подписчики, просмотры постов, ответы на комменты, отклики/ответы. Какой пост сработал лучше всего?");
   lines.push("Цифры заявок, созвонов и оплат — из CRM.");
   return lines.join("\n");
 }
@@ -337,6 +354,17 @@ const RUNNERS = {
     const t = discoveryReportText();
     if (t) await sendMessage(config.ownerTelegramId, t);
   },
+  contra_foryou_1: contraForYou,
+  contra_foryou_2: contraForYou,
+  contra_foryou_3: contraForYou,
+  contra_foryou_4: contraForYou,
+  contra_foryou_5: contraForYou,
+  school_rem: () => sendMessage(config.ownerTelegramId, "🏫 Через 15 минут школа. Время собираться."),
+  physics_rem: () => sendMessage(config.ownerTelegramId, "⚛️ Через 15 минут физика. Удачи на занятии!"),
+  math_rem: () => sendMessage(config.ownerTelegramId, "📐 Пора выходить на математику, дорога займёт около часа."),
+  english_rem: () => sendMessage(config.ownerTelegramId, "🇬🇧 Через 15 минут английский. Удачи на занятии!"),
+  calm_1: () => sendMessage(config.ownerTelegramId, pickCalm()),
+  calm_2: () => sendMessage(config.ownerTelegramId, pickCalm()),
   weekly: () => sendMessage(config.ownerTelegramId, weeklyReportText()),
 };
 
@@ -350,7 +378,9 @@ export function plannerTick() {
   const fired = getAgentValue("plannerFired", {});
   const due = TASKS.filter((t) => shouldFire(t, now, fired));
   // Отложенные «⏰ Позже».
-  const snoozes = getAgentValue("plannerSnoozes", []).filter((s) => s.at <= Date.now());
+  // Отложенные рабочие напоминания не показываем в воскресенье и после 21:00.
+  const workQuiet = now.dow === 0 || toMin(now.time) >= toMin("21:00");
+  const snoozes = workQuiet ? [] : getAgentValue("plannerSnoozes", []).filter((s) => s.at <= Date.now());
   if (!due.length && !snoozes.length) return;
 
   running = true;

@@ -42,7 +42,7 @@ export function getHistory(chatId) {
 export function pushHistory(chatId, role, text) {
   if (!state.chats[chatId]) state.chats[chatId] = { history: [] };
   state.chats[chatId].history.push({ role, text, ts: Date.now() });
-  // Клиентские чаты храним длинно (Рафаэль анализирует переписку целиком),
+  // Клиентские чаты храним длинно (Джарвис анализирует переписку целиком),
   // служебные secretary:/content: — коротко, как раньше.
   const isClientChat = !String(chatId).includes(":");
   const limit = isClientChat ? config.chatStoreLimit : config.historyLimit;
@@ -288,7 +288,7 @@ export function getChatMeta(chatId) {
   return { title: chat.title || "", kind: chat.kind || "unknown" };
 }
 
-// --- Сессии Claude (claude --resume): память Рафаэля и /day как в обычном чате ---
+// --- Сессии Claude (claude --resume): память Джарвиса и /day как в обычном чате ---
 export function getSession(key) {
   return state.sessions?.[key] || null;
 }
@@ -349,7 +349,7 @@ export function importChatHistory(chatId, { title, messages }) {
   return chat.history.length;
 }
 
-// Поиск клиентского чата по id, @username или части имени — для Рафаэля.
+// Поиск клиентского чата по id, @username или части имени — для Джарвиса.
 export function findChats(query) {
   const q = String(query).trim().replace(/^#/, "").toLowerCase();
   const entries = Object.entries(state.chats || {}).filter(([key]) => !key.includes(":"));
@@ -422,7 +422,7 @@ export function findDraftByCardMessage(messageId) {
   return hit ? hit[0] : null;
 }
 
-// Последние черновики на утверждении — чтобы Рафаэль понимал «измени ответ клиенту».
+// Последние черновики на утверждении — чтобы Джарвис понимал «измени ответ клиенту».
 export function listRecentDrafts(limit = 6) {
   return Object.entries(state.drafts || {})
     .filter(([, d]) => ["business", "channel_post", "comment", "reddit"].includes(d.kind) && d.text && !d.queued)
@@ -431,7 +431,7 @@ export function listRecentDrafts(limit = 6) {
     .slice(0, limit);
 }
 
-// Последние сообщения бота владельцу (не Рафаэля) — для контекста Рафаэля.
+// Последние сообщения бота владельцу (не Джарвиса) — для контекста Джарвиса.
 export function addBotNote(text) {
   const a = agent();
   a.botNotes = a.botNotes || [];

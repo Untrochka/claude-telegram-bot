@@ -1,10 +1,10 @@
 import { crmStatus, crmWarm } from "./untra/store.js";
-// Рафаэль и бот — одна команда. Здесь:
-// - botStateText(): короткая сводка состояния бота для системного промпта Рафаэля
+// Джарвис и бот — одна команда. Здесь:
+// - botStateText(): короткая сводка состояния бота для системного промпта Джарвиса
 //   (что включено, модели, лимиты, план на сегодня, задачи, черновики);
 // - eventsText(): журнал — команды Мастера и всё, что бот присылал сам;
 // - localRoute(): простые фразы выполняются без Claude (экономия лимитов),
-//   всё остальное идёт Рафаэлю.
+//   всё остальное идёт Джарвису.
 import { config } from "./config.js";
 import {
   getBotNotes,
@@ -78,7 +78,7 @@ export function botStateText(ownerChatId) {
 }
 
 // --- Простые фразы без Claude ---
-// Только очень уверенные совпадения; всё сомнительное — Рафаэлю.
+// Только очень уверенные совпадения; всё сомнительное — Джарвису.
 // -> { action, arg } | null
 export function localRoute(text) {
   const t = text.trim();
@@ -145,7 +145,7 @@ export function memoryForAgents() {
     .join("\n")}`;
 }
 
-// Последние комментарии (черновики и отправленные) с постом — для Рафаэля.
+// Последние комментарии (черновики и отправленные) с постом — для Джарвиса.
 export function commentsContextText(limit = 5) {
   const list = getCommentHistory().slice(-limit);
   if (!list.length) return "Комментариев пока не было.";

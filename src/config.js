@@ -35,7 +35,7 @@ export const config = {
   anthropicApiKey: process.env.ANTHROPIC_API_KEY || "",
   // Сколько последних сообщений клиентского чата давать автоответчику в промпт.
   historyLimit: Number(process.env.HISTORY_LIMIT || 10),
-  // Сколько сообщений на клиентский чат хранить (для Рафаэля и анализа переписок).
+  // Сколько сообщений на клиентский чат хранить (для Джарвиса и анализа переписок).
   chatStoreLimit: Number(process.env.CHAT_STORE_LIMIT || 300),
   personaPath: path.join(__dirname, "persona.md"),
   assistantPersonaPath: path.join(__dirname, "assistant-persona.md"),

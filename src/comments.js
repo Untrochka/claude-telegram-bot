@@ -566,7 +566,7 @@ function commentButtons(id) {
   ];
 }
 
-// История комментариев (и черновики, и отправленные) — чтобы Рафаэль мог
+// История комментариев (и черновики, и отправленные) — чтобы Джарвис мог
 // обсуждать конкретный коммент даже после отправки.
 export function recordCommentHistory(draftId, patch) {
   updateAgentValue("commentHistory", [], (list) => {

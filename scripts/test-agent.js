@@ -1,6 +1,6 @@
 // Офлайн-тесты агента (без Telegram и без Claude): парсеры, фильтры постов,
 // метрики каналов, расписание, стратегии, модели.
-// Живой тест стриминга Рафаэля (дёргает claude -p на haiku): node scripts/test-agent.js --live
+// Живой тест стриминга Джарвиса (дёргает claude -p на haiku): node scripts/test-agent.js --live
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";
@@ -75,6 +75,7 @@ check("reddit много ответов", !redditPostPasses({ ...rp, num_comment
 check("reddit не вопрос", !redditPostPasses({ ...rp, title: "My new portfolio site", selftext: "Built with love and coffee, check it out friends" }, now));
 
 // Планировщик
+const toMinTest = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
 const tn = tashkentNow(new Date("2026-09-29T08:10:00Z")); // Вт 13:10 в Ташкенте
 check("ташкент время", tn.time === "13:10" && tn.dow === 2 && tn.date === "2026-09-29");
 const tg = TASKS.find((t) => t.key === "tg_post");
@@ -87,8 +88,11 @@ check("окно 3 ч прошло", !shouldFire(tg, late, {}, new Date("2026-09-
 check("тихие часы 23:45", isQuietTime({ time: "23:45" }) && isQuietTime({ time: "03:00" }) && !isQuietTime({ time: "11:30" }));
 check("формат Contra по кругу", nextContraFormat(null).key === CONTRA_POST_FORMATS[0].key && nextContraFormat(CONTRA_POST_FORMATS.at(-1).key).key === CONTRA_POST_FORMATS[0].key && nextContraFormat("figma_to_code").key !== "figma_to_code");
 check("комменты Contra в 11:30", TASKS.find((t) => t.key === "contra_comments").time === "11:30");
-const show = TASKS.find((t) => t.key === "showoff");
-check("showoff только первая суббота", taskDueToday(show, tashkentNow(new Date("2026-10-03T08:00:00Z"))) && !taskDueToday(show, tashkentNow(new Date("2026-10-10T08:00:00Z"))));
+check("showoff отключён", !TASKS.some((t) => t.key === "showoff"));
+check("воскресенье: ничего", TASKS.every((t) => !t.days.includes(0)));
+check("суббота: только английский и calm", TASKS.filter((t) => t.days.includes(6)).every((t) => ["english_rem", "calm_1", "calm_2"].includes(t.key)));
+check("всё заканчивается до 21:00", TASKS.every((t) => toMinTest(t.time) + (t.window ?? 180) <= 21 * 60));
+check("weekly в понедельник 11:05", TASKS.find((t) => t.key === "weekly").days.join() === "1" && TASKS.find((t) => t.key === "weekly").time === "11:05");
 
 // Стратегии
 check("contra по ключевому слову", strategiesFor("сколько постов на контре?").includes("contra"));
@@ -108,7 +112,7 @@ check("кривой effort не ставится", setEffort("writer", "ultra") 
 resetEfforts();
 check("reset effort", getEffort("writer") === "medium");
 
-// Стрим Рафаэля: служебные строки скрыты
+// Стрим Джарвиса: служебные строки скрыты
 check("стрим скрывает [[CHAT", visibleRaphaelText("[[CHAT: Бахтиёр]]") === null);
 check("стрим чистит хвост", visibleRaphaelText("Ок, сейчас\n[[STRATEGY_NOTE: contra | 4 поста]]") === "Ок, сейчас");
 check("стрим недописанный маркер", visibleRaphaelText("Текст [[CHA") === "Текст");
@@ -135,8 +139,8 @@ check("роутер: напомни", localRoute("напомни через 2 ч
 check("роутер: напомни мин", localRoute("напомни через 30 минут выпить воды")?.arg === "30m выпить воды");
 check("роутер: запомни", localRoute("запомни: созвон в пятницу")?.arg === "созвон в пятницу");
 check("роутер: задачи", localRoute("мои задачи")?.action === "todo_list");
-check("роутер: сложное -> Рафаэль", localRoute("найди мне клиентов и напиши им") === null);
-check("роутер: вопрос про каналы -> Рафаэль", localRoute("почему так мало каналов?") === null);
+check("роутер: сложное -> Джарвис", localRoute("найди мне клиентов и напиши им") === null);
+check("роутер: вопрос про каналы -> Джарвис", localRoute("почему так мало каналов?") === null);
 
 
 // --- outreach: скан, CRM_BATCH, SEND_QUEUE ---

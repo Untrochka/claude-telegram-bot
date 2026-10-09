@@ -1,5 +1,5 @@
 // Стратегии продвижения Азиза (src/strategies/*.md) + его правки поверх них
-// (хранятся в state.json, файлы в репо не переписываются). Рафаэль, /day и
+// (хранятся в state.json, файлы в репо не переписываются). Джарвис, /day и
 // агент получают только нужные стратегии, а не все сразу.
 import fs from "node:fs";
 import path from "node:path";
@@ -16,7 +16,7 @@ export const STRATEGIES = {
   comments: "Комментарии",
   schedule: "Расписание",
   clients: "Ответы клиентам (автоответчик)",
-  raphael: "Как общается Рафаэль",
+  raphael: "Как общается Джарвис",
 };
 
 const KEYWORDS = {
@@ -51,7 +51,7 @@ export function readStrategy(name) {
   return `${base}\n\n## Правки Азиза (важнее текста выше)\n${list}`;
 }
 
-// Какие стратегии нужны для этого запроса. overview и правила Рафаэля — всегда.
+// Какие стратегии нужны для этого запроса. overview и правила Джарвиса — всегда.
 export function strategiesFor(text, extra = []) {
   const names = new Set(["overview", "raphael", ...extra]);
   for (const [name, re] of Object.entries(KEYWORDS)) if (re.test(text || "")) names.add(name);
@@ -93,7 +93,7 @@ export function strategiesListText() {
     ...lines,
     "",
     "Показать: /strategy <имя>, например /strategy contra",
-    "Добавить правку: /strategy <имя> + <текст>  (или просто скажи Рафаэлю)",
+    "Добавить правку: /strategy <имя> + <текст>  (или просто скажи Джарвису)",
     "Удалить правку: /strategy <имя> - <номер>",
   ].join("\n");
 }

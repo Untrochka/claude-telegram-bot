@@ -5,3 +5,4 @@ data/state.json
 data/examples/
 *.log
 .claude/settings.local.json
+data/

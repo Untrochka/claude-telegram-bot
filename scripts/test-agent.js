@@ -14,7 +14,10 @@ process.env.UNTRA_DATA_DIR = path.join(os.tmpdir(), `agent-test-untra-${Date.now
 
 const { parseFilter, parseWriter, postPassesHeuristics, channelMetrics, channelQualifies, scoreChannel, isCancelText, dictatedText, bansFromInstruction, banViolations } = await import("../src/comments.js");
 const { redditPostPasses } = await import("../src/reddit.js");
-const { tashkentNow, shouldFire, TASKS, taskDueToday, isQuietTime, nextContraFormat, CONTRA_POST_FORMATS } = await import("../src/planner.js");
+const { tashkentNow, shouldFire, currentTasks, taskDueToday, isQuietTime, reminderAllowed, TASK_RUNNER_KEYS, nextContraFormat, CONTRA_POST_FORMATS } = await import("../src/planner.js");
+const J = await import("../src/jarvis.js");
+const { watcherDue, parseClassification } = await import("../src/watcher.js");
+const TASKS = currentTasks();
 const { strategiesFor, readStrategy, addStrategyNote, removeStrategyNote, strategiesBlock } = await import("../src/strategies.js");
 const { getModel, getEffort, setEffort, resetEfforts } = await import("../src/models.js");
 const { visibleRaphaelText, parseChatRequest } = await import("../src/raphael.js");
@@ -89,9 +92,9 @@ check("тихие часы 23:45", isQuietTime({ time: "23:45" }) && isQuietTime
 check("формат Contra по кругу", nextContraFormat(null).key === CONTRA_POST_FORMATS[0].key && nextContraFormat(CONTRA_POST_FORMATS.at(-1).key).key === CONTRA_POST_FORMATS[0].key && nextContraFormat("figma_to_code").key !== "figma_to_code");
 check("комменты Contra в 11:30", TASKS.find((t) => t.key === "contra_comments").time === "11:30");
 check("showoff отключён", !TASKS.some((t) => t.key === "showoff"));
-check("воскресенье: только calm", TASKS.filter((t) => t.days.includes(0)).every((t) => t.key.startsWith("calm_")));
+check("воскресенье: только calm", TASKS.filter((t) => t.days.includes(0)).every((t) => t.type === "calm"));
 check("суббота: только английский и calm", TASKS.filter((t) => t.days.includes(6)).every((t) => ["english_rem", "calm_1", "calm_2"].includes(t.key)));
-check("всё заканчивается до 21:00", TASKS.every((t) => toMinTest(t.time) + (t.window ?? 180) <= 21 * 60));
+check("работа не позже 21:00", TASKS.filter((t) => t.work).every((t) => toMinTest(t.time) + (t.window ?? 180) <= 21 * 60 + 15));
 check("weekly в понедельник 11:05", TASKS.find((t) => t.key === "weekly").days.join() === "1" && TASKS.find((t) => t.key === "weekly").time === "11:05");
 
 // Стратегии
@@ -207,6 +210,90 @@ if (process.argv.includes("--live")) {
   check("live: стрим пришёл кусками", deltas >= 1 && res.text.length > 20);
 }
 
+
+// --- Настройки Джарвиса (state/jarvis.json), временный UNTRA_DATA_DIR ---
+const seed = J.loadJarvis();
+const OLD_KEYS = ["brief", "tg_post", "contra_post", "linkedin_post", "linkedin_comments", "contra_comments", "contra_foryou_1", "contra_foryou_2", "contra_foryou_3", "contra_foryou_4", "contra_foryou_5", "discovery_report", "weekly", "evening_plan", "school_rem", "physics_rem", "math_rem", "english_rem", "calm_1", "calm_2"];
+check("seed: файл создан", fs.existsSync(path.join(process.env.UNTRA_DATA_DIR, "untra", "state", "jarvis.json")));
+check("seed: все старые ключи задач", OLD_KEYS.every((k) => seed.reminders.some((r) => r.id === k)));
+check("seed: обращение Мастер, без ошибок", seed.address === "Мастер" && J.validateJarvis(seed).length === 0);
+check("seed: расписание из schedule.md", seed.schedule.find((s) => s.id === "math").from === "17:00" && seed.schedule.find((s) => s.id === "english").days.join() === "2,4,6");
+check("seed: типы и поля", seed.reminders.find((r) => r.id === "brief").type === "task" && seed.reminders.find((r) => r.id === "contra_foryou_5").window === 15 && seed.reminders.find((r) => r.id === "linkedin_post").evenWeeks === true && seed.reminders.find((r) => r.id === "calm_1").type === "calm" && seed.reminders.find((r) => r.id === "school_rem").work === false);
+check("seed: task-ключи есть в планировщике", seed.reminders.filter((r) => r.type === "task").every((r) => TASK_RUNNER_KEYS.includes(r.task)) && [...J.TASK_KEYS].sort().join() === [...TASK_RUNNER_KEYS].sort().join());
+const tn2 = (iso) => tashkentNow(new Date(iso));
+const find = (id) => currentTasks().find((t) => t.key === id);
+const sat = tn2("2026-10-10T09:00:00Z"); // Сб 14:00
+const sun = tn2("2026-10-11T07:30:00Z"); // Вс 12:30
+check("правила: работа молчит в субботу", !reminderAllowed(find("contra_comments"), sat) && !shouldFire({ ...find("contra_comments"), days: [6], time: "14:00" }, sat, {}, new Date("2026-10-10T09:00:00Z")));
+check("правила: работа молчит в воскресенье", !reminderAllowed(find("brief"), sun));
+check("правила: английский в субботу можно", reminderAllowed(find("english_rem"), sat));
+check("правила: calm в воскресенье срабатывает", shouldFire(find("calm_1"), sun, {}, new Date("2026-10-11T07:30:00Z")));
+const eve = tn2("2026-10-08T16:05:00Z"); // Чт 21:05
+check("правила: работа молчит после 21:00", !reminderAllowed(find("contra_foryou_5"), eve) && reminderAllowed(find("contra_foryou_5"), tn2("2026-10-08T15:45:00Z")));
+check("правила: нерабочее после 21:00 можно", reminderAllowed(find("calm_2"), eve));
+check("правила: тихие часы блокируют всё", !reminderAllowed(find("calm_1"), { ...sun, time: "23:40" }) && !reminderAllowed(find("calm_1"), { ...sun, time: "07:00" }));
+
+let r = J.applyJarvisOps({ op: "set", path: "rules.noWorkAfter", value: "20:00" });
+check("ops set: noWorkAfter", r.ok && J.loadJarvis().rules.noWorkAfter === "20:00" && /noWorkAfter/.test(r.summary));
+check("правила следуют за файлом", !reminderAllowed(find("contra_foryou_5"), tn2("2026-10-08T15:15:00Z")));
+r = J.applyJarvisOps([{ op: "set", path: "rules.dayOffWork", value: [] }, { op: "set", path: "address", value: "Азиз" }]);
+check("ops set: массив операций", r.ok && J.loadJarvis().rules.dayOffWork.length === 0 && J.loadJarvis().address === "Азиз");
+r = J.applyJarvisOps({ op: "add", list: "reminders", value: { days: [0, 1], time: "15:00", type: "text", text: "Выпей воды." } });
+const added = J.loadJarvis().reminders.find((x) => x.text === "Выпей воды.");
+check("ops add: id сгенерирован, work=false, window", r.ok && added && added.id.startsWith("r_") && added.work === false && added.enabled === true && added.window === 30);
+r = J.applyJarvisOps({ op: "update", list: "reminders", id: added.id, value: { time: "16:30", enabled: false } });
+check("ops update", r.ok && J.loadJarvis().reminders.find((x) => x.id === added.id).time === "16:30" && !currentTasks().some((t) => t.key === added.id));
+r = J.applyJarvisOps({ op: "remove", list: "reminders", id: added.id });
+check("ops remove", r.ok && !J.loadJarvis().reminders.some((x) => x.id === added.id));
+r = J.applyJarvisOps([{ op: "add", list: "watch.chats", value: { query: "Ильяс" } }, { op: "add", list: "style", value: "без эмодзи" }, { op: "add", list: "tasks", value: { text: "Сдать отчёт", important: true, due: "2026-10-12" } }]);
+check("ops add: чат, стиль, задача", r.ok && J.loadJarvis().watch.chats[0].query === "Ильяс" && J.loadJarvis().style.includes("без эмодзи") && J.loadJarvis().tasks[0].important === true);
+r = J.applyJarvisOps({ op: "remove", list: "style", value: 2 });
+check("ops remove style по номеру", r.ok && !J.loadJarvis().style.includes("без эмодзи"));
+r = J.applyJarvisOps({ op: "remove", list: "watch.chats", id: "ильяс" });
+check("ops remove чат", r.ok && J.loadJarvis().watch.chats.length === 0);
+const before = JSON.stringify(J.loadJarvis());
+const bad = [
+  [{ op: "set", path: "watch.intervalMin", value: 2 }, /5–1440/],
+  [{ op: "set", path: "rules.quietHours", value: "25:00-08:00" }, /ЧЧ:ММ/],
+  [{ op: "set", path: "version", value: 2 }, /менять нельзя/],
+  [{ op: "add", list: "reminders", value: { id: "x1", days: [7], time: "10:00", type: "text", text: "a" } }, /days/],
+  [{ op: "add", list: "reminders", value: { id: "x1", days: [1], time: "10:61", type: "text", text: "a" } }, /time/],
+  [{ op: "add", list: "reminders", value: { id: "x1", days: [1], time: "10:00", type: "task", task: "nope" } }, /неизвестный task/],
+  [{ op: "add", list: "reminders", value: { id: "x1", days: [1], time: "10:00", type: "robot" } }, /type/],
+  [{ op: "update", list: "reminders", id: "нет", value: {} }, /нет записи/],
+  [{ op: "remove", list: "reminders", id: "нет" }, /не нашёл/],
+  [{ op: "fly" }, /неизвестная операция/],
+  [{ op: "add", list: "nope", value: 1 }, /не существует/],
+];
+for (const [op, re] of bad) {
+  const x = J.applyJarvisOps(op);
+  check(`ops ошибка: ${JSON.stringify(op).slice(0, 55)}`, !x.ok && re.test(x.errors.join(" ")));
+}
+r = J.applyJarvisOps([{ op: "set", path: "address", value: "Бро" }, { op: "set", path: "watch.intervalMin", value: 1 }]);
+check("ops: при ошибке ничего не сохраняется", !r.ok && JSON.stringify(J.loadJarvis()) === before && fs.readFileSync(path.join(process.env.UNTRA_DATA_DIR, "untra", "state", "jarvis.json"), "utf-8").includes('"Азиз"'));
+const prompt = J.jarvisPromptText();
+check("промпт: обращение, правила, чаты", prompt.includes("«Азиз»") && prompt.includes("state/jarvis.json") && prompt.includes("brief") && prompt.includes("тихие часы 23:30-08:00"));
+
+// Маркер [[JARVIS_SET]]
+const m1 = '[[JARVIS_SET: {"op":"set","path":"address","value":"Брат ]] тест"}]]';
+const mm = J.extractJarvisSet(`Готово.\n${m1}\nЕщё текст`);
+check("маркер: объект с ]] в строке", mm.length === 1 && mm[0].value.value === "Брат ]] тест");
+const m2 = '[[JARVIS_SET: [{"op":"add","list":"style","value":"a"},{"op":"remove","list":"style","value":"a"}] ]]';
+check("маркер: массив", J.extractJarvisSet(m2)[0].value.length === 2);
+check("маркер: битый JSON -> null", J.extractJarvisSet("[[JARVIS_SET: {oops} ]]")[0].value === null);
+check("маркер вырезан", J.stripJarvisSet(`До ${m1} после`).replace(/\s+/g, " ") === "До после");
+check("маркер вырезан в стриме", visibleRaphaelText('Делаю. [[JARVIS_SET: {"op":"set","pa') === "Делаю." && visibleRaphaelText(`Ок ${m2}`) === "Ок");
+
+// Наблюдатель
+const wj = { rules: { quietHours: "23:30-08:00" }, watch: { chats: [{ query: "a" }], from: "08:00", to: "21:00", intervalMin: 30 } };
+const t0 = 1_000_000_000_000;
+check("watcher: в окне и прошло 30 мин", watcherDue(wj, { time: "12:00" }, t0 - 31 * 60_000, t0));
+check("watcher: рано (интервал)", !watcherDue(wj, { time: "12:00" }, t0 - 10 * 60_000, t0));
+check("watcher: вне окна / тихие часы", !watcherDue(wj, { time: "21:30" }, 0, t0) && !watcherDue(wj, { time: "06:00" }, 0, t0));
+check("watcher: нет чатов", !watcherDue({ ...wj, watch: { ...wj.watch, chats: [] } }, { time: "12:00" }, 0, t0));
+check("watcher: разбор ответа", parseClassification('{"important":true,"summary":" Просят счёт. "}').summary === "Просят счёт." && parseClassification("мусор") === null && parseClassification('{"important":"yes"}').important === false);
+
 fs.rmSync(tmpState, { force: true });
+fs.rmSync(process.env.UNTRA_DATA_DIR, { recursive: true, force: true });
 console.log(failed ? `\n${failed} FAIL` : "\nВсё ок");
 process.exit(failed ? 1 : 0);

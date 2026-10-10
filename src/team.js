@@ -21,7 +21,7 @@ import {
 import { ROLES, getModel, getEffort } from "./models.js";
 import { getWatch, commentsActive, getCommentHistory } from "./comments.js";
 import { isMtprotoReady } from "./mtproto.js";
-import { TASKS, taskDueToday, tashkentNow } from "./planner.js";
+import { currentTasks, taskDueToday, tashkentNow } from "./planner.js";
 
 export function logEvent(text) {
   addBotNote(text);
@@ -55,7 +55,7 @@ export function botStateText(ownerChatId) {
   const models = `${getModel()}, effort: ${Object.keys(ROLES).map((r) => `${r}=${getEffort(r)}`).join(", ")}`;
   const watch = Object.entries(getWatch());
   const now = tashkentNow();
-  const today = TASKS.filter((t) => !["brief", "weekly", "discovery_report"].includes(t.key) && taskDueToday(t, now));
+  const today = currentTasks().filter((t) => !["brief", "weekly", "discovery_report"].includes(t.task || t.key) && taskDueToday(t, now));
   const todayStart = new Date(`${now.date}T00:00:00+05:00`).getTime();
   const doneToday = new Set(getAgentValue("planLog", []).filter((e) => e.ts >= todayStart && e.status === "done").map((e) => e.key));
   const plan = today.length ? today.map((t) => `${t.time} ${t.label}${doneToday.has(t.key) ? " ✅" : ""}`).join("; ") : "обязательного нет";

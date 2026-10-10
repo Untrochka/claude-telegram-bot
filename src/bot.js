@@ -86,6 +86,8 @@ import {
 } from "./comments.js";
 import { runRedditDigest, handleRedditCallback, applyRedditRewrite } from "./reddit.js";
 import { plannerTick, handlePlanCallback, morningBriefText } from "./planner.js";
+import { applyJarvisOps } from "./jarvis.js";
+import { watcherTick } from "./watcher.js";
 import { applyDraftRewrite, clientRulesText, clientCardText, clientButtons, postButtons } from "./rewrite.js";
 import { localRoute, logEvent, LOCAL_ACK, memoryForAgents, findCommentByText, botStateText } from "./team.js";
 import { setMemoryProvider, getWatch } from "./comments.js";
@@ -1012,14 +1014,41 @@ async function runRaphaelAction(chatId, { name, arg = "" }) {
   }
 }
 
-async function secretaryTurn(chatId, text, images = []) {
+// Настройки Джарвиса из маркера [[JARVIS_SET]]: сразу, без карточки — но только в ходе личного чата
+// Мастера и только если в ходе не читались чужие тексты (иначе это путь для prompt injection).
+async function applyJarvisSets(chatId, sets, { blocked = false } = {}) {
+  if (!sets.length) return;
+  if (blocked) {
+    await sendMessage(chatId, "⚠️ Настройки не менял: в этом ходе я читал чужую переписку или ход начал сам бот. Попроси отдельным сообщением.");
+    return;
+  }
+  for (const ops of sets) {
+    if (!ops) {
+      await sendMessage(chatId, "⚠️ Настройки не изменил: маркер с неверным JSON.");
+      continue;
+    }
+    try {
+      const res = applyJarvisOps(ops);
+      if (res.ok) {
+        addBotNote(`Настройки Джарвиса изменены: ${res.summary}`);
+        await sendMessage(chatId, `✅ Записал: ${res.summary}`);
+      } else await sendMessage(chatId, `⚠️ Настройки не изменил:\n${res.errors.map((e) => `• ${e}`).join("\n")}`);
+    } catch (err) {
+      console.error("[bot] JARVIS_SET:", err.message);
+      await sendMessage(chatId, `⚠️ Настройки не изменил: ${err.message}`);
+    }
+  }
+}
+
+// opts.auto — ход начат ботом, а не Мастером (настройки по маркеру не применяем).
+async function secretaryTurn(chatId, text, images = [], opts = {}) {
   const chatKey = `${SECRETARY_CHAT_PREFIX}${chatId}`;
   const fallbackHistory = getHistory(chatKey);
   pushHistory(chatKey, "azizhon", text);
   const stopTyping = keepTyping(chatId);
   const streamer = createStreamer(chatId, { transform: visibleRaphaelText });
   try {
-    const { text: reply, notes, rewrites, actions, writes, crmLogs, crmBatches, sendQueues } = await raphaelTurn({
+    const { text: reply, notes, rewrites, actions, writes, crmLogs, crmBatches, sendQueues, jarvisSets, foreignLoaded } = await raphaelTurn({
       chatKey,
       text,
       images,
@@ -1041,6 +1070,7 @@ async function secretaryTurn(chatId, text, images = []) {
     for (const c of crmLogs || []) await sendCrmLogCard(chatId, c);
     for (const b of crmBatches || []) await sendCrmBatchCard(chatId, b);
     for (const q of sendQueues || []) await sendQueueCard(chatId, q);
+    await applyJarvisSets(chatId, jarvisSets || [], { blocked: opts.auto || foreignLoaded });
     for (const rw of rewrites || []) {
       const ok = await applyDraftRewrite(rw.draftId, rw.instruction);
       if (!ok) await sendMessage(chatId, `Черновик #${rw.draftId} уже не актуален.`);
@@ -1448,6 +1478,7 @@ function enqueuePersonal(msg) {
 function agentTick() {
   try {
     plannerTick();
+    runAgentJob("watcher", watcherTick);
     runAgentJob("commentQueue", processCommentQueue);
     if (isMtprotoReady()) {
       runAgentJob("discovery", () => runDiscovery());
@@ -1511,7 +1542,9 @@ setEveningPlanRunner(() =>
     config.ownerTelegramId,
     "[Автозадача 20:45] Подготовь план на завтра. Прочитай [[UNTRA: state/NOW.md]], [[CRM: тёплые]] и [[CRM: статус]], учти моё расписание и приоритеты. " +
       "Потом коротко напиши мне план (что сделать мне самому, что делают ИИ, кому напомнить, сколько новых и в каких сегментах) " +
-      "и предложи обновлённый state/NOW.md целиком через UNTRA_WRITE, с разделом «## План на <завтрашняя дата>» в начале."
+      "и предложи обновлённый state/NOW.md целиком через UNTRA_WRITE, с разделом «## План на <завтрашняя дата>» в начале.",
+    [],
+    { auto: true }
   )
 );
 setOwnerLogger((text) => addBotNote(text));

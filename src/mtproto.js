@@ -378,3 +378,43 @@ export async function sendDirect(to, text) {
   const m = await safe(() => client.sendMessage(peer, { message: text }));
   return { id: m?.id || null, title: peer?.username ? `@${peer.username}` : raw };
 }
+
+// --- Наблюдатель за чатами (watcher.js): только чтение ---
+
+// Чат по запросу (название/@username/id) -> { id, title } | { options } | null.
+// cachedId — id, найденный раньше: берём его без повторного поиска по названию.
+export async function resolveWatchChat(query, cachedId = null) {
+  const list = await getDialogs();
+  const byId = cachedId ? list.find((d) => d.id === String(cachedId)) : null;
+  if (byId) return { id: byId.id, title: byId.title };
+  const found = await findDialogs(query);
+  if (!found.length) return null;
+  const q = String(query).trim().toLowerCase();
+  const exact = found.find((d) => d.title.toLowerCase() === q);
+  if (found.length > 1 && !exact) return { options: found.slice(0, 5).map((d) => d.title || d.id) };
+  const d = exact || found[0];
+  return { id: d.id, title: d.title };
+}
+
+// Один дешёвый запрос: id последнего сообщения чата (0 — пусто).
+export async function latestMessageId(chatId) {
+  const d = (await getDialogs()).find((x) => x.id === String(chatId));
+  if (!d) throw new Error("чат не найден среди диалогов");
+  const [m] = [...(await safe(() => client.getMessages(d.entity, { limit: 1 })))].filter((x) => x?.id);
+  return m?.id || 0;
+}
+
+// Новые сообщения после minId (не больше max, старые сверху). Только чужие (не от владельца).
+// -> { incoming: [{ id, date, sender, text }], topId }
+export async function newIncomingSince(chatId, minId, max = 30) {
+  const d = (await getDialogs()).find((x) => x.id === String(chatId));
+  if (!d) throw new Error("чат не найден среди диалогов");
+  const msgs = [...(await safe(() => client.getMessages(d.entity, { limit: max, minId })))].filter((m) => m?.id && m.id > minId);
+  const topId = msgs.reduce((a, m) => Math.max(a, m.id), minId);
+  const incoming = msgs
+    .filter((m) => !m.out)
+    .reverse()
+    .map((m) => ({ id: m.id, date: (m.date || 0) * 1000, sender: senderName(m, d), text: (m.message || "").trim() || mediaLabel(m) }))
+    .filter((m) => m.text);
+  return { incoming, topId };
+}

@@ -19,6 +19,7 @@ import { pendingCommentDrafts, discoveryReportText, commentsActive } from "./com
 import { runRedditDigest } from "./reddit.js";
 import { isMtprotoReady } from "./mtproto.js";
 import { pickCalm } from "./calm.js";
+import { loadJarvis, toMin, inRange, defaultWork } from "./jarvis.js";
 
 // Память Мастера — через провайдера (team.js импортирует planner.js).
 let memoryProvider = () => "";
@@ -62,43 +63,32 @@ function isoWeek(date = new Date()) {
   return Math.ceil(((d - yearStart) / 86_400_000 + 1) / 7);
 }
 
-const toMin = (hhmm) => {
-  const [h, m] = hhmm.split(":").map(Number);
-  return h * 60 + m;
-};
-
-// days: 0=Вс … 6=Сб. window — сколько минут после времени задача ещё может
-// сработать (если бот был выключен). platform — для отчёта.
-export const TASKS = [
-  // Антивыгорание: Вс — ничего; Сб — без работы; работа не позже 21:00.
-  // hidden — не показывать в утренней сводке; window — сколько минут задача ещё может сработать.
-  { key: "brief", label: "Утренняя сводка", days: [1, 2, 3, 4, 5], time: "11:00", platform: null },
-  { key: "tg_post", label: "Пост в Untra.dev", days: [2, 4], time: "13:00", platform: "telegram" },
-  { key: "contra_post", label: "Пост на Contra", days: [2, 4], time: "13:05", platform: "contra" },
-  // reddit выключен: по стратегии 10.2026 только LinkedIn и Contra.
-  { key: "linkedin_post", label: "Пост в LinkedIn", days: [5], time: "13:00", platform: "linkedin", evenWeeks: true },
-  { key: "linkedin_comments", label: "Комментарии в LinkedIn", days: [3], time: "13:30", platform: "linkedin" },
-  { key: "contra_comments", label: "Комментарии на Contra (3 шт.)", days: [1, 2, 3, 4, 5], time: "11:30", platform: "contra" },
-  { key: "contra_foryou_1", label: "Contra: For you", days: [1, 2, 3, 4, 5], time: "08:05", platform: "contra", hidden: true, window: 30 },
-  { key: "contra_foryou_2", label: "Contra: For you", days: [1, 2, 3, 4, 5], time: "11:00", platform: "contra", hidden: true, window: 30 },
-  { key: "contra_foryou_3", label: "Contra: For you", days: [1, 2, 3, 4, 5], time: "14:00", platform: "contra", hidden: true, window: 30 },
-  { key: "contra_foryou_4", label: "Contra: For you", days: [2, 4], time: "18:00", platform: "contra", hidden: true, window: 30 },
-  { key: "contra_foryou_5", label: "Contra: For you", days: [1, 2, 3, 4, 5], time: "20:40", platform: "contra", hidden: true, window: 15 },
-  { key: "discovery_report", label: "Отчёт по каналам для комментариев", days: [1], time: "12:00", platform: null },
-  { key: "weekly", label: "Недельный отчёт", days: [1], time: "11:05", platform: null },
-  { key: "evening_plan", label: "План на завтра", days: [1, 2, 3, 4], time: "20:45", platform: null, window: 15 },
-  { key: "school_rem", label: "Школа", days: [1, 2, 3, 4, 5], time: "08:15", platform: null, hidden: true, window: 15 },
-  { key: "physics_rem", label: "Физика", days: [1, 3, 5], time: "14:15", platform: null, hidden: true, window: 15 },
-  { key: "math_rem", label: "Математика", days: [1, 3, 5], time: "16:00", platform: null, hidden: true, window: 20 },
-  { key: "english_rem", label: "Английский", days: [2, 4, 6], time: "15:15", platform: null, hidden: true, window: 15 },
-  { key: "calm_1", label: "Спокойное сообщение", days: [0, 1, 2, 3, 4, 5, 6], time: "12:30", platform: null, hidden: true, window: 60 },
-  { key: "calm_2", label: "Спокойное сообщение", days: [0, 1, 2, 3, 4, 5, 6], time: "19:30", platform: null, hidden: true, window: 60 },
-];
+// Напоминания живут в untra: state/jarvis.json (см. jarvis.js). days: 0=Вс … 6=Сб.
+// window — сколько минут после времени напоминание ещё может сработать (если бот был выключен).
+// Антивыгорание целиком из rules файла: тихие часы, «работа не позже», выходные.
 const WINDOW_MIN = 180;
-// Тихие часы: после 23:30 и до 08:00 бот ничего не напоминает (стратегия Contra 07.10).
-export function isQuietTime(now = tashkentNow()) {
-  const m = toMin(now.time);
-  return m >= toMin("23:30") || m < toMin("08:00");
+
+// Включённые напоминания в виде задач (key = id напоминания).
+export function currentTasks(j = loadJarvis()) {
+  return j.reminders
+    .filter((r) => r.enabled !== false)
+    .map((r) => ({ ...r, key: r.id, label: r.label || r.title || r.id, work: defaultWork(r) }));
+}
+
+// Тихие часы: ничего не напоминаем (по умолчанию 23:30–08:00).
+export function isQuietTime(now = tashkentNow(), rules = loadJarvis().rules) {
+  return inRange(rules.quietHours, now.time);
+}
+
+// Общие правила файла. Рабочие напоминания: не в выходные (Сб без работы, Вс совсем) и не после «работа не позже».
+// Нерабочие (учёба, спокойные сообщения) идут по своим дням.
+export function reminderAllowed(task, now = tashkentNow(), rules = loadJarvis().rules) {
+  if (isQuietTime(now, rules)) return false;
+  if (defaultWork(task)) {
+    if (rules.dayOffWork.includes(now.dow) || rules.dayOffAll.includes(now.dow)) return false;
+    if (toMin(now.time) >= toMin(rules.noWorkAfter)) return false;
+  }
+  return true;
 }
 
 export function taskDueToday(task, now = tashkentNow(), date = new Date()) {
@@ -108,8 +98,9 @@ export function taskDueToday(task, now = tashkentNow(), date = new Date()) {
   return true;
 }
 
-export function shouldFire(task, now, firedMap, date = new Date()) {
+export function shouldFire(task, now, firedMap, date = new Date(), rules = loadJarvis().rules) {
   if (!taskDueToday(task, now, date)) return false;
+  if (!reminderAllowed(task, now, rules)) return false;
   if (firedMap[`${task.key}:${now.date}`]) return false;
   const diff = toMin(now.time) - toMin(task.time);
   return diff >= 0 && diff <= (task.window ?? WINDOW_MIN);
@@ -261,10 +252,6 @@ async function contraComments() {
   );
 }
 
-async function contraForYou() {
-  await sendMessage(config.ownerTelegramId, "Contra: загляни в «For you» — новые заказы (2–3 минуты, откликнуться только на подходящие).");
-}
-
 async function linkedinComments() {
   await sendMessageWithButtons(
     config.ownerTelegramId,
@@ -294,7 +281,8 @@ async function showoffReminder() {
 
 export function morningBriefText() {
   const now = tashkentNow();
-  const today = TASKS.filter((t) => !t.hidden && !["brief", "weekly", "discovery_report", "evening_plan"].includes(t.key) && taskDueToday(t, now));
+  const rules = loadJarvis().rules;
+  const today = currentTasks().filter((t) => !t.hidden && !["brief", "weekly", "discovery_report", "evening_plan"].includes(t.task || t.key) && taskDueToday(t, now) && !(defaultWork(t) && (rules.dayOffWork.includes(now.dow) || rules.dayOffAll.includes(now.dow))));
   const lines = [`☀️ План на сегодня (${now.date})`];
   if (today.length) for (const t of today) lines.push(`• ${t.time} — ${t.label}`);
   else lines.push("• по площадкам сегодня ничего обязательного");
@@ -322,7 +310,7 @@ function weeklyReportText() {
   }
   const comments = getAgentValue("commentsLog", []).filter((e) => e.ts > weekAgo).length;
   const posts = getRecentPosts().filter((p) => p.ts > weekAgo).length;
-  const label = Object.fromEntries(TASKS.map((t) => [t.key, t.label]));
+  const label = Object.fromEntries(currentTasks().map((t) => [t.key, t.label]));
   label.reddit_answer = "Ответы на Reddit";
   const lines = ["📊 Неделя:", `• Постов в Untra.dev: ${posts} (цель 3)`, `• Комментариев в Telegram через бота: ${comments}`];
   for (const [k, v] of Object.entries(byKey)) {
@@ -339,6 +327,7 @@ export function setEveningPlanRunner(fn) {
   eveningPlanRunner = fn;
 }
 
+// Запускаемые задачи (reminder.type === "task"). Список ключей: TASK_KEYS в jarvis.js.
 const RUNNERS = {
   evening_plan: () => eveningPlanRunner?.(),
   brief: () => sendMessage(config.ownerTelegramId, morningBriefText()),
@@ -354,19 +343,34 @@ const RUNNERS = {
     const t = discoveryReportText();
     if (t) await sendMessage(config.ownerTelegramId, t);
   },
-  contra_foryou_1: contraForYou,
-  contra_foryou_2: contraForYou,
-  contra_foryou_3: contraForYou,
-  contra_foryou_4: contraForYou,
-  contra_foryou_5: contraForYou,
-  school_rem: () => sendMessage(config.ownerTelegramId, "🏫 Через 15 минут школа. Время собираться."),
-  physics_rem: () => sendMessage(config.ownerTelegramId, "⚛️ Через 15 минут физика. Удачи на занятии!"),
-  math_rem: () => sendMessage(config.ownerTelegramId, "📐 Пора выходить на математику, дорога займёт около часа."),
-  english_rem: () => sendMessage(config.ownerTelegramId, "🇬🇧 Через 15 минут английский. Удачи на занятии!"),
-  calm_1: () => sendMessage(config.ownerTelegramId, pickCalm()),
-  calm_2: () => sendMessage(config.ownerTelegramId, pickCalm()),
   weekly: () => sendMessage(config.ownerTelegramId, weeklyReportText()),
 };
+export const TASK_RUNNER_KEYS = Object.keys(RUNNERS);
+
+// Выполнить напоминание из файла: text — просто текст (без Claude), calm — спокойная фраза, task — функция по ключу.
+async function runReminder(r) {
+  if (r.type === "text") return sendMessage(config.ownerTelegramId, r.text);
+  if (r.type === "calm") return sendMessage(config.ownerTelegramId, pickCalm());
+  if (r.type === "task") {
+    if (!RUNNERS[r.task]) return console.warn(`[planner] Напоминание ${r.id}: неизвестная задача «${r.task}», пропускаю.`);
+    return RUNNERS[r.task]();
+  }
+  console.warn(`[planner] Напоминание ${r.id}: неизвестный тип «${r.type}», пропускаю.`);
+}
+
+// По id: напоминание из файла, иначе внутренняя задача (contra_post_replies и т.п.).
+async function runById(id) {
+  const r = loadJarvis().reminders.find((x) => x.id === id);
+  if (r) return runReminder(r);
+  if (RUNNERS[id]) return RUNNERS[id]();
+  console.warn(`[planner] Не знаю напоминание «${id}», пропускаю.`);
+}
+
+// Отложенное («⏰ Позже»): рабочее ждёт, пока правила разрешат работу; нерабочее — только тихие часы.
+function snoozeAllowed(key, now, rules) {
+  const r = loadJarvis().reminders.find((x) => x.id === key);
+  return reminderAllowed({ work: r ? defaultWork(r) : true }, now, rules);
+}
 
 let running = false;
 
@@ -374,13 +378,12 @@ let running = false;
 export function plannerTick() {
   if (!config.plannerEnabled || running) return;
   const now = tashkentNow();
-  if (isQuietTime(now)) return;
+  const j = loadJarvis();
+  if (isQuietTime(now, j.rules)) return;
   const fired = getAgentValue("plannerFired", {});
-  const due = TASKS.filter((t) => shouldFire(t, now, fired));
-  // Отложенные «⏰ Позже».
-  // Отложенные рабочие напоминания не показываем в воскресенье и после 21:00.
-  const workQuiet = now.dow === 0 || toMin(now.time) >= toMin("21:00");
-  const snoozes = workQuiet ? [] : getAgentValue("plannerSnoozes", []).filter((s) => s.at <= Date.now());
+  const due = currentTasks(j).filter((t) => shouldFire(t, now, fired, new Date(), j.rules));
+  // Отложенные «⏰ Позже» — по тем же правилам файла.
+  const snoozes = getAgentValue("plannerSnoozes", []).filter((s) => s.at <= Date.now() && snoozeAllowed(s.key, now, j.rules));
   if (!due.length && !snoozes.length) return;
 
   running = true;
@@ -388,7 +391,7 @@ export function plannerTick() {
     for (const t of due) {
       markFired(t.key, now.date);
       try {
-        await RUNNERS[t.key]?.();
+        await runReminder(t);
       } catch (err) {
         console.error(`[planner] Задача ${t.key} упала:`, err.message);
       }
@@ -396,13 +399,13 @@ export function plannerTick() {
     if (snoozes.length) {
       const cutoff = Date.now();
       updateAgentValue("plannerSnoozes", [], (list) => {
-        const keep = list.filter((x) => x.at > cutoff);
+        const keep = list.filter((x) => x.at > cutoff || !snoozes.includes(x));
         list.length = 0;
         list.push(...keep);
       });
       for (const s of snoozes) {
         try {
-          await RUNNERS[s.key]?.();
+          await runById(s.key);
         } catch (err) {
           console.error(`[planner] Отложенная задача ${s.key} упала:`, err.message);
         }
@@ -444,5 +447,5 @@ export async function handlePlanCallback(query, action, key) {
 }
 
 export async function runTaskNow(key) {
-  await RUNNERS[key]?.();
+  await runById(key);
 }

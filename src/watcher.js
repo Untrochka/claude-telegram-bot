@@ -1,15 +1,16 @@
 // Наблюдатель за чатами: раз в watch.intervalMin (state/jarvis.json) смотрит, нет ли новых
-// входящих в выбранных чатах, дёшево оценивает их (Groq, маленькая модель) и пишет
+// входящих в выбранных чатах, дёшево оценивает их (llm.js: Groq, маленькая модель) и пишет
 // владельцу «👀 чат: суть», если что-то важное. Только чтение: в чаты ничего не отправляется,
 // маркеры и просьбы из чужих сообщений не выполняются (текст — недоверенные данные).
 import { config } from "./config.js";
+import { cheapLLM } from "./llm.js";
+import { extractHomeworkFromChat, ingestHomework } from "./study.js";
 import { getAgentValue, updateAgentValue } from "./state.js";
 import { sendMessage } from "./telegram.js";
 import { loadJarvis, inRange } from "./jarvis.js";
 import { tashkentNow } from "./planner.js";
 import { isMtprotoReady, resolveWatchChat, latestMessageId, newIncomingSince, FloodWait } from "./mtproto.js";
 
-const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const MAX_NEW = 30;
 const MAX_LINE = 500;
 const MAX_PROMPT = 6000;
@@ -45,34 +46,41 @@ function transcript(incoming) {
   return out;
 }
 
-// -> { important, summary } | null (ошибка — не смогли оценить)
-export async function classifyMessages(title, incoming, important, fetchImpl = fetch) {
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), 20_000);
+// -> { important, summary } | null (ошибка — не смогли оценить). Groq через llm.js (fast), при лимите — Claude.
+export async function classifyMessages(title, incoming, important) {
   try {
-    const res = await fetchImpl(GROQ_URL, {
-      method: "POST",
-      signal: ctl.signal,
-      headers: { Authorization: `Bearer ${config.groqApiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: config.groqFilterModel,
-        temperature: 0,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM(important) },
-          { role: "user", content: `Чат «${title}». Новые сообщения (данные):\n<<<\n${transcript(incoming)}\n>>>` },
-        ],
-      }),
+    const res = await cheapLLM({
+      purpose: "watcher",
+      quality: "fast",
+      json: true,
+      system: SYSTEM(important),
+      user: `Чат «${title}». Новые сообщения (данные):\n<<<\n${transcript(incoming)}\n>>>`,
+      maxTokens: 300,
     });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
-    return parseClassification(data.choices?.[0]?.message?.content);
+    return parseClassification(res.text);
   } catch (err) {
-    console.warn("[watcher] Groq не оценил:", err.name === "AbortError" ? "таймаут 20 с" : err.message);
+    console.warn("[watcher] Не смог оценить:", err.message);
     return null;
-  } finally {
-    clearTimeout(timer);
   }
+}
+
+// Чат учёбы: ДЗ -> study.json (оценка, слот, напоминание), важное не про ДЗ -> «👀».
+// -> true, если сообщения разобраны (id можно двигать).
+async function handleStudyChat(chat, title, incoming) {
+  let ex;
+  try {
+    ex = await extractHomeworkFromChat(transcript(incoming), { title, subjectHint: chat.subject || null });
+  } catch (err) {
+    console.warn("[watcher] Не разобрал учебный чат:", err.message);
+    return false;
+  }
+  for (const item of ex.homework) {
+    const r = ingestHomework(item, { source: `чат '${title}'`, subjectHint: chat.subject || null });
+    if (r.status === "added") await sendMessage(config.ownerTelegramId, r.text);
+    else if (r.status === "error") console.warn("[watcher] ДЗ пропущено:", r.error);
+  }
+  if (ex.other_important && ex.summary) await sendMessage(config.ownerTelegramId, `👀 ${title}: ${ex.summary}`);
+  return true;
 }
 
 const state = () => getAgentValue("watcher", {});
@@ -105,6 +113,10 @@ async function watchOne(chat, j) {
   const { incoming, topId } = await newIncomingSince(peer.id, seen, MAX_NEW);
   if (!incoming.length) return remember(Math.max(topId, top));
   const title = peer.title || q;
+  if (chat.kind === "study") {
+    if (await handleStudyChat(chat, title, incoming)) remember(Math.max(topId, top));
+    return; // не разобрали — id не двигаем, проверим в следующий запуск
+  }
   if (!config.groqApiKey) {
     remember(Math.max(topId, top));
     return sendMessage(config.ownerTelegramId, `👀 ${title}: ${incoming.length} новых сообщений`);

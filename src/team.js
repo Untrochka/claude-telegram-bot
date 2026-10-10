@@ -1,4 +1,5 @@
 import { crmStatus, crmWarm } from "./untra/store.js";
+import { llmStatsText } from "./llm.js";
 // Джарвис и бот — одна команда. Здесь:
 // - botStateText(): короткая сводка состояния бота для системного промпта Джарвиса
 //   (что включено, модели, лимиты, план на сегодня, задачи, черновики);
@@ -73,6 +74,7 @@ export function botStateText(ownerChatId) {
     `Черновики ждут решения: ${drafts.length ? Object.entries(byKind).map(([k, n]) => `${kindLabel[k] || k} ${n}`).join(", ") : "нет"}.`,
     `Открытые задачи (${tasks.length}): ${tasks.slice(0, 5).map((t) => `#${t.id} ${t.text.slice(0, 60)}`).join("; ") || "нет"}.`,
     `Фактов в памяти: ${listMemory().length}.`,
+    llmStatsText(),
     crmStateText(),
   ].join("\n");
 }

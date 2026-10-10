@@ -22,6 +22,10 @@ const { strategiesFor, readStrategy, addStrategyNote, removeStrategyNote, strate
 const { getModel, getEffort, setEffort, resetEfforts } = await import("../src/models.js");
 const { visibleRaphaelText, parseChatRequest } = await import("../src/raphael.js");
 const { localRoute } = await import("../src/team.js");
+const { config } = await import("../src/config.js");
+const L = await import("../src/llm.js");
+const S = await import("../src/study.js");
+const { listOpenTasks } = await import("../src/state.js");
 
 let failed = 0;
 function check(name, cond) {
@@ -93,7 +97,7 @@ check("формат Contra по кругу", nextContraFormat(null).key === CONT
 check("комменты Contra в 11:30", TASKS.find((t) => t.key === "contra_comments").time === "11:30");
 check("showoff отключён", !TASKS.some((t) => t.key === "showoff"));
 check("воскресенье: только calm", TASKS.filter((t) => t.days.includes(0)).every((t) => t.type === "calm"));
-check("суббота: только английский и calm", TASKS.filter((t) => t.days.includes(6)).every((t) => ["english_rem", "calm_1", "calm_2"].includes(t.key)));
+check("суббота: только английский и calm", TASKS.filter((t) => t.days.includes(6)).every((t) => ["english_rem", "calm_1", "calm_2", "study_checkin"].includes(t.key)));
 check("работа не позже 21:00", TASKS.filter((t) => t.work).every((t) => toMinTest(t.time) + (t.window ?? 180) <= 21 * 60 + 15));
 check("weekly в понедельник 11:05", TASKS.find((t) => t.key === "weekly").days.join() === "1" && TASKS.find((t) => t.key === "weekly").time === "11:05");
 
@@ -292,6 +296,235 @@ check("watcher: рано (интервал)", !watcherDue(wj, { time: "12:00" },
 check("watcher: вне окна / тихие часы", !watcherDue(wj, { time: "21:30" }, 0, t0) && !watcherDue(wj, { time: "06:00" }, 0, t0));
 check("watcher: нет чатов", !watcherDue({ ...wj, watch: { ...wj.watch, chats: [] } }, { time: "12:00" }, 0, t0));
 check("watcher: разбор ответа", parseClassification('{"important":true,"summary":" Просят счёт. "}').summary === "Просят счёт." && parseClassification("мусор") === null && parseClassification('{"important":"yes"}').important === false);
+
+
+// --- Дешёвый LLM: Groq -> второй Groq -> Claude (без сети: подмена fetch и Claude) ---
+L.setCheapLLM(null);
+config.groqApiKey = "test-key";
+const hdr = (o) => ({ get: (k) => o[k.toLowerCase()] ?? null });
+const okBody = (txt) => ({ choices: [{ message: { content: txt } }] });
+let fetchCalls = [];
+const mkFetch = (plan) => async (url, init) => {
+  const model = JSON.parse(init.body).model;
+  fetchCalls.push(model);
+  const r = plan[model] || { status: 200, body: okBody('{"ok":true}') };
+  return { status: r.status, ok: r.status < 400, headers: hdr(r.headers || {}), json: async () => r.body ?? {} };
+};
+let claudeCalls = 0;
+const claudeFake = async () => {
+  claudeCalls += 1;
+  return '```json\n{"from":"claude"}\n```';
+};
+check("llm: разбор длительностей", L.parseDurationSec("2m59.56s") > 179.5 && L.parseDurationSec("7.66s") === 7.66 && L.parseDurationSec("30") === 30 && L.parseDurationSec("120ms") === 0.12 && L.parseDurationSec("") === null);
+check("llm: JSON из ```", L.parseJsonLoose('текст ```json\n{"a":1}\n```').a === 1 && L.parseJsonLoose("не json") === null);
+L.resetLLMState();
+L.setLLMTransport({ fetch: mkFetch({}), claude: claudeFake });
+let r1 = await L.cheapLLM({ purpose: "t", system: "s", user: "u", quality: "fast" });
+check("llm: fast -> groq fast", r1.provider === `groq:${config.groqFastModel}` && r1.json.ok === true);
+r1 = await L.cheapLLM({ purpose: "t", system: "s", user: "u", quality: "smart" });
+check("llm: smart -> groq smart", r1.provider === `groq:${config.groqSmartModel}`);
+fetchCalls = [];
+L.resetLLMState();
+L.setLLMTransport({ fetch: mkFetch({ [config.groqSmartModel]: { status: 429, headers: { "retry-after": "30" } } }), claude: claudeFake });
+r1 = await L.cheapLLM({ purpose: "t", system: "s", user: "u", quality: "smart" });
+check("llm: smart 429 -> fast", r1.provider === `groq:${config.groqFastModel}` && L.llmStats().cooling[config.groqSmartModel] > 0 && L.llmStats().cooling[config.groqSmartModel] <= 30);
+fetchCalls = [];
+await L.cheapLLM({ purpose: "t", system: "s", user: "u", quality: "smart" });
+check("llm: модель на паузе не дёргается", !fetchCalls.includes(config.groqSmartModel));
+L.resetLLMState();
+claudeCalls = 0;
+L.setLLMTransport({ fetch: mkFetch({ [config.groqFastModel]: { status: 429, headers: { "retry-after": "20" } }, [config.groqSmartModel]: { status: 429, headers: { "x-ratelimit-reset-requests": "1m0s" } } }), claude: claudeFake });
+r1 = await L.cheapLLM({ purpose: "t", system: "s", user: "u" });
+check("llm: оба 429 -> Claude", r1.provider === "claude" && r1.json.from === "claude" && claudeCalls === 1 && Object.keys(L.llmStats().cooling).length === 2);
+fetchCalls = [];
+r1 = await L.cheapLLM({ purpose: "t", system: "s", user: "u" });
+check("llm: обе на паузе -> сразу Claude, без fetch", r1.provider === "claude" && fetchCalls.length === 0);
+let threw = false;
+try {
+  await L.cheapLLM({ purpose: "t", system: "s", user: "u", fallback: "none" });
+} catch {
+  threw = true;
+}
+check("llm: fallback none бросает ошибку", threw);
+L.resetLLMState();
+L.setLLMTransport({ fetch: mkFetch({ [config.groqFastModel]: { status: 200, headers: { "x-ratelimit-remaining-requests": "0", "x-ratelimit-reset-requests": "12s" } } }), claude: claudeFake });
+await L.cheapLLM({ purpose: "t", system: "s", user: "u" });
+check("llm: остаток 0 -> пауза до сброса", L.llmStats().cooling[config.groqFastModel] > 0 && L.llmStats().limits[config.groqFastModel].remainingRequests === 0);
+L.resetLLMState();
+L.setLLMTransport({ fetch: mkFetch({ [config.groqFastModel]: { status: 200, body: okBody("не json") }, [config.groqSmartModel]: { status: 500, body: { error: { message: "boom" } } } }), claude: claudeFake });
+r1 = await L.cheapLLM({ purpose: "t", system: "s", user: "u" });
+check("llm: мусор и 500 -> Claude; счётчики", r1.provider === "claude" && L.llmStats().requests.claude === 1 && L.llmStats().failures[`groq:${config.groqFastModel}`] === 1 && /Дешёвый LLM/.test(L.llmStatsText()));
+L.resetLLMState();
+config.groqApiKey = "";
+L.setLLMTransport({ fetch: mkFetch({}), claude: claudeFake });
+r1 = await L.cheapLLM({ purpose: "t", system: "s", user: "u" });
+check("llm: нет ключа Groq -> Claude", r1.provider === "claude");
+config.groqApiKey = "test-key";
+
+// Наблюдатель через cheapLLM (подмена)
+L.setCheapLLM(async () => ({ text: '{"important":true,"summary":"Просят счёт"}', json: {}, provider: "mock" }));
+const { classifyMessages } = await import("../src/watcher.js");
+const cl = await classifyMessages("Ильяс", [{ date: Date.now(), sender: "Ильяс", text: "вышли счёт" }], ["деньги"]);
+check("watcher: classifyMessages через cheapLLM", cl.important === true && cl.summary === "Просят счёт");
+L.setCheapLLM(async () => {
+  throw new Error("всё недоступно");
+});
+check("watcher: сбой LLM -> null", (await classifyMessages("x", [{ date: Date.now(), sender: "a", text: "b" }], [])) === null);
+L.setCheapLLM(null);
+
+// --- Учёба: математика ---
+const mk = (list) => ({ ...S.emptyStudy(), sessions: list.map(([subject, type, volume, minutes, extra], i) => ({ id: `s${i + 1}`, date: `2026-09-${String(i + 1).padStart(2, "0")}`, subject, type, volume, unit: "задач", minutes, flows: null, difficulty: "normal", newTopic: false, estimateMin: null, homeworkId: null, ...(extra || {}) })) });
+check("study: медиана", S.median([2, 4, 3, 10]) === 3.5 && S.median([5, 1, 9]) === 5 && S.median([]) === null);
+check("study: flow -> минуты", S.flowsToMinutes(6, 25) === 150 && S.flowsToMinutes(3, 30) === 90);
+const s1 = mk([["physics", "problems", 70, 150]]);
+let e = S.estimate("physics", "problems", 30, { study: s1 });
+check("study: 1 точка = low, ±15%, буфер 30%", e.expectedMin === 64 && e.confidence === "low" && e.range.join() === "55,74" && e.safeMin === 84 && e.n === 1 && e.source === "type");
+check("study: сложность при <3 точек", S.estimate("physics", "problems", 30, { study: s1, difficulty: "hard" }).expectedMin === 84 && S.estimate("physics", "problems", 30, { study: s1, difficulty: "easy" }).expectedMin === 57 && S.estimate("physics", "problems", 30, { study: s1, newTopic: true }).expectedMin === 77);
+const s3 = mk([["physics", "problems", 10, 20], ["physics", "problems", 10, 30], ["physics", "problems", 10, 40]]);
+e = S.estimate("physics", "problems", 10, { study: s3, difficulty: "hard", newTopic: true });
+check("study: 3 точки = medium, сложность не применяется, буфер 20%", e.expectedMin === 30 && !e.adjusted && e.confidence === "medium" && e.range.join() === "27,33" && e.safeMin === 36);
+const s6 = mk(Array.from({ length: 6 }, (_, i) => ["math", "problems", 10, 20 + i]));
+e = S.estimate("math", "problems", 10, { study: s6 });
+check("study: 6 точек = high, ±7%, буфер 15%", e.confidence === "high" && e.expectedMin === 23 && e.range.join() === "21,24" && e.buffer === 0.15 && S.bufferFor(11) === 0.1 && S.bufferFor(2) === 0.3 && S.bufferFor(5) === 0.2);
+const s12 = mk([["math", "problems", 1, 100], ["math", "problems", 1, 100], ...Array.from({ length: 10 }, () => ["math", "problems", 1, 2])]);
+check("study: медиана только по последним 10", S.estimate("math", "problems", 10, { study: s12 }).expectedMin === 20 && S.estimate("math", "problems", 10, { study: s12 }).n === 12 && S.estimate("math", "problems", 10, { study: s12 }).buffer === 0.1);
+e = S.estimate("physics", "theory", 5, { study: s1 });
+check("study: нет данных по типу -> медиана предмета, low", e.source === "subject" && e.confidence === "low" && e.expectedMin === 11);
+check("study: нет данных вообще -> null", S.estimate("english", "reading", 5, { study: s1 }) === null && S.estimate("physics", "problems", null, { study: s1 }) === null);
+const sNoVol = mk([["physics", "problems", null, 60], ["physics", "problems", 30, 60]]);
+check("study: сессии без объёма не идут в скорость", S.baseline(sNoVol, "physics", "problems").n === 1 && S.estimate("physics", "problems", 30, { study: sNoVol }).expectedMin === 60);
+const sRatio = mk([["math", "problems", 10, 150, { estimateMin: 100 }], ["math", "problems", 10, 100, { estimateMin: 100 }]]);
+check("study: ошибка оценок и своя оценка владельца", Math.abs(S.errorRatio(sRatio).avg - 1.25) < 1e-9 && S.estimate("physics", "theory", 5, { study: sRatio, ownerEstimateMin: 60 }).expectedMin === 75 && S.estimate("physics", "theory", 5, { study: sRatio, ownerEstimateMin: 60 }).source === "owner");
+const sFlow = S.emptyStudy();
+sFlow.flowMin = 30;
+const ses = S.addSessionTo(sFlow, { subject: "Физика", type: "задачи", volume: "70", flows: 6 });
+check("study: сессия через flows, алиасы предмета/типа", ses.minutes === 180 && ses.subject === "physics" && ses.type === "problems" && ses.volume === 70 && ses.id === "s1");
+let badSes = null;
+try {
+  S.addSessionTo(sFlow, { subject: "physics", volume: 5 });
+} catch (err) {
+  badSes = err;
+}
+check("study: сессия без времени — ошибка", badSes instanceof S.StudyError);
+check("study: типы не изобретаются", S.normType("physics", "аудирование") === null && S.normType("english", "аудирование") === "listening" && S.normSubject("алгебра") === "math" && S.normSubject("кулинария") === null);
+
+// Дубли ДЗ
+const hwBase = S.emptyStudy();
+const nowMs = Date.parse("2026-10-10T09:00:00+05:00");
+const hw1 = S.addHomeworkTo(hwBase, { subject: "math", text: "Решить 30 задач из сборника, стр. 45", volume: 30, deadline: "2026-10-14", unit: "задач" }, { nowMs, plan: false });
+check("study: ДЗ создано", hw1.id === "h1" && hw1.type === "problems" && hw1.status === "todo" && hw1.estMin === null);
+check("study: дубль в течение 7 дней", S.findDuplicateHomework(hwBase, { subject: "math", text: "решить 30 задач из сборника стр 45" }, nowMs + 86_400_000)?.id === "h1");
+check("study: другой предмет / другой текст / позже 7 дней — не дубль", !S.findDuplicateHomework(hwBase, { subject: "physics", text: hw1.text }, nowMs) && !S.findDuplicateHomework(hwBase, { subject: "math", text: "выучить теорему Виета" }, nowMs) && !S.findDuplicateHomework(hwBase, { subject: "math", text: hw1.text }, nowMs + 8 * 86_400_000));
+
+// Слот под ДЗ: не на занятия, не в воскресенье, не поздно
+const dj = J.defaultJarvis(); // Вт: английский 15:30–17:00; Ср: математика 17:00–20:20
+check("слот: вечер перед сроком (Вт 19:00)", S.planSlot({ deadline: "2026-10-14", estMin: 60, nowMs, jarvis: dj }) === "2026-10-13T19:00");
+check("слот: после математики, а не поверх (Ср 21:05)", S.planSlot({ deadline: "2026-10-15", estMin: 60, nowMs, jarvis: dj }) === "2026-10-14T21:05");
+check("слот: длинное не лезет в окно после занятий -> день раньше", S.planSlot({ deadline: "2026-10-15", estMin: 120, nowMs, jarvis: dj }) === "2026-10-13T19:00");
+check("слот: воскресенье пропускаем", S.planSlot({ deadline: "2026-10-12", estMin: 40, nowMs, jarvis: dj }) === "2026-10-10T19:00");
+check("слот: без срока — ближайший свободный вечер", S.planSlot({ estMin: 30, nowMs, jarvis: dj }) === "2026-10-10T19:00");
+check("слот: два ДЗ не накладываются", S.planSlot({ deadline: "2026-10-14", estMin: 40, nowMs, jarvis: dj, others: [{ planned: "2026-10-13T19:00", estMin: 50 }] }) === "2026-10-13T20:00");
+check("слот: сегодня поздно и срок сегодня -> нет слота", S.planSlot({ deadline: "2026-10-10", estMin: 60, nowMs: Date.parse("2026-10-10T22:00:00+05:00"), jarvis: dj }) === null);
+check("слот: не позже 22:30", (() => { const x = S.planSlot({ deadline: "2026-10-15", estMin: 60, nowMs, jarvis: dj }); return x && S.plannedToMs(x) + 60 * 60_000 <= Date.parse(`${x.slice(0, 10)}T22:30:00+05:00`); })());
+
+// Миграция jarvis.json: study_checkin добавляется один раз
+const jf = path.join(process.env.UNTRA_DATA_DIR, "untra", "state", "jarvis.json");
+check("seed: study_checkin есть (пн–сб 20:30, не работа)", (() => { const r = J.loadJarvis().reminders.find((x) => x.id === "study_checkin"); return r && r.time === "20:30" && r.days.join() === "1,2,3,4,5,6" && r.work === false && r.task === "study_checkin"; })());
+const old = JSON.parse(fs.readFileSync(jf, "utf-8"));
+old.reminders = old.reminders.filter((x) => x.id !== "study_checkin");
+delete old.migrated;
+fs.writeFileSync(jf, JSON.stringify(old));
+J.resetJarvisCache();
+check("миграция: добавила study_checkin", J.loadJarvis().reminders.some((x) => x.id === "study_checkin") && JSON.parse(fs.readFileSync(jf, "utf-8")).migrated.includes("study_checkin"));
+J.applyJarvisOps({ op: "remove", list: "reminders", id: "study_checkin" });
+J.resetJarvisCache();
+check("миграция: второй раз не возвращает удалённое", !J.loadJarvis().reminders.some((x) => x.id === "study_checkin"));
+J.applyJarvisOps({ op: "add", list: "reminders", value: { id: "study_checkin", days: [1, 2, 3, 4, 5, 6], time: "20:30", type: "task", task: "study_checkin", work: false, hidden: true, window: 120 } });
+
+// Чаты учёбы в jarvis.json
+r = J.applyJarvisOps({ op: "add", list: "watch.chats", value: { query: "Математика 11", kind: "study", subject: "math" } });
+check("watch.chats: kind study + subject", r.ok && J.loadJarvis().watch.chats.find((c) => c.query === "Математика 11").kind === "study" && J.jarvisPromptText().includes("[учёба:math]"));
+check("watch.chats: плохой kind / subject отклоняются", !J.applyJarvisOps({ op: "add", list: "watch.chats", value: { query: "Z", kind: "robot" } }).ok && !J.applyJarvisOps({ op: "add", list: "watch.chats", value: { query: "Z", kind: "study", subject: "chemistry" } }).ok);
+J.applyJarvisOps({ op: "remove", list: "watch.chats", id: "Математика 11" });
+
+// Операции [[STUDY]] и валидация
+r = S.applyStudyOps({ op: "add_homework", value: { subject: "physics", type: "problems", text: "Динамика, 30 задач", volume: 30, unit: "задач", deadline: "2099-01-05" } });
+check("STUDY: add_homework + уведомление", r.ok && /добавил ДЗ h1/.test(r.summary) && r.notices.length === 1 && /Новое ДЗ \(Физика\)/.test(r.notices[0]) && S.loadStudy().homework.length === 1 && S.loadStudy().homework[0].planned);
+check("STUDY: напоминание в planned создано (tasks)", listOpenTasks().some((t) => /Время ДЗ по физике/.test(t.text) && t.dueAt));
+check("STUDY: дубль отклоняется", !S.applyStudyOps({ op: "add_homework", value: { subject: "physics", text: "динамика 30 задач", volume: 30 } }).ok);
+const before2 = JSON.stringify(S.loadStudy());
+r = S.applyStudyOps([{ op: "add_session", value: { subject: "math", type: "problems", volume: 10, minutes: 40 } }, { op: "add_session", value: { subject: "кулинария", minutes: 10 } }, { op: "remove", list: "homework", id: "h99" }, { op: "set", path: "flowMin", value: 3 }, { op: "fly" }]);
+check("STUDY: ошибки не сохраняют ничего", !r.ok && r.errors.length === 4 && JSON.stringify(S.loadStudy()) === before2);
+r = S.applyStudyOps([{ op: "done_homework", id: "h1", session: { flows: 4, difficulty: "easy" } }, { op: "set", path: "flowMin", value: 30 }]);
+const st1 = S.loadStudy();
+check("STUDY: done_homework + сессия (flows×flowMin по порядку)", r.ok && st1.homework[0].status === "done" && st1.homework[0].doneSessionId === "s1" && st1.sessions[0].minutes === 100 && st1.sessions[0].volume === 30 && st1.flowMin === 30);
+r = S.applyStudyOps([{ op: "update_homework", id: "h1", value: { status: "todo", deadline: "2099-02-02" } }, { op: "add_session", value: { subject: "english", type: "vocabulary", minutes: 50, flows: 2 } }]);
+check("STUDY: update_homework и add_session (minutes важнее flows)", r.ok && S.loadStudy().homework[0].deadline === "2099-02-02" && S.loadStudy().sessions[1].minutes === 50);
+check("STUDY: update валидирует", !S.applyStudyOps({ op: "update_homework", id: "h1", value: { deadline: "завтра" } }).ok && !S.applyStudyOps({ op: "update_homework", id: "h1", value: { status: "zzz" } }).ok);
+r = S.applyStudyOps([{ op: "remove", list: "sessions", id: "s2" }]);
+check("STUDY: remove", r.ok && S.loadStudy().sessions.length === 1);
+const sm = '[[STUDY: {"op":"set","path":"flowMin","value":25}]]';
+check("STUDY: маркер извлекается и скрыт", J.extractTagged(`Ок ${sm} дальше`, "[[STUDY:")[0].value.value === 25 && visibleRaphaelText(`Ок ${sm}`) === "Ок" && visibleRaphaelText('Ок [[STUDY: {"op":"add_h') === "Ок");
+check("STUDY: промпт Джарвиса", /Учёба и время/.test(S.studyPromptText()) && /Личные скорости/.test(S.studyPromptText()) && /physics\/problems/.test(S.studyPromptText()));
+
+// Проверка ДЗ без Claude
+const ck = S.emptyStudy();
+check("check-in: пусто — молчим", S.checkinText(ck, nowMs) === null);
+S.addHomeworkTo(ck, { subject: "physics", text: "30 задач", volume: 30, unit: "задач", deadline: "2026-10-20" }, { nowMs, plan: false });
+check("check-in: срок далеко и слот не наступил — молчим", S.checkinText(ck, nowMs) === null);
+ck.homework[0].planned = "2026-10-10T08:00";
+check("check-in: слот прошёл — спрашиваем", S.checkinText(ck, nowMs) === 'Сделал ДЗ по физике (30 задач)? Напиши сколько и за сколько, например: "сделал 30, 3 flow".');
+ck.homework[0].planned = null;
+ck.homework[0].deadline = "2026-10-11";
+check("check-in: срок завтра — спрашиваем", S.pendingForCheckin(ck, nowMs).length === 1);
+ck.homework[0].status = "done";
+check("check-in: выполненное не спрашиваем", S.checkinText(ck, nowMs) === null);
+
+// Разбор чата учёбы и ДЗ из чата (подмена LLM)
+let llmCalls = 0;
+const hwDeadline = S.tnow(Date.now() + 3 * 86_400_000).date;
+L.setCheapLLM(async (o) => {
+  llmCalls += 1;
+  if (o.purpose === "study_extract") {
+    return { text: "", provider: "mock", json: { homework: [{ subject: "алгебра", type: "задачи", text: "Решить номера 12-40 из сборника", volume: 29, unit: "задач", deadline: hwDeadline }, { subject: "кулинария", text: "испечь пирог" }], other_important: true, summary: "Контрольная перенесена на пятницу" } };
+  }
+  return { text: "", provider: "mock", json: MOCK_INTENT };
+});
+let MOCK_INTENT = {};
+const ex = await S.extractHomeworkFromChat("[10:00] Учитель: сделайте номера", { title: "Математика 11", subjectHint: "math" });
+check("chat: extract возвращает ДЗ и важное", ex.homework.length === 2 && ex.other_important && /Контрольная/.test(ex.summary));
+const ing = ex.homework.map((x) => S.ingestHomework(x, { source: "чат 'Математика 11'", subjectHint: "math" }));
+check("chat: валидное ДЗ добавлено, мусорный предмет отклонён", ing[0].status === "added" && ing[0].hw.subject === "math" && ing[0].hw.source === "чат 'Математика 11'" && ing[1].status === "error");
+check("chat: уведомление — формат, «оценки нет», слот", /^📚 Новое ДЗ \(Математика\): 29 задач/.test(ing[0].text) && /сдать до/.test(ing[0].text) && /Оценки пока нет/.test(ing[0].text) && /Поставил на/.test(ing[0].text));
+check("chat: повтор не дублируется", S.ingestHomework(ex.homework[0], { subjectHint: "math" }).status === "duplicate");
+const mathOpen = S.loadStudy().homework.find((h) => h.subject === "math");
+check("chat: planned не пересекается с занятиями", (() => { const d = mathOpen.planned; if (!d) return false; const dow = new Date(`${d.slice(0, 10)}T00:00:00Z`).getUTCDay(); const m = Number(d.slice(11, 13)) * 60 + Number(d.slice(14)); return !J.loadJarvis().schedule.some((c) => c.days.includes(dow) && m >= J.toMin(c.from) && m < J.toMin(c.to)) && dow !== 0; })());
+
+// Отчёты и вопросы владельца (классификатор подменён)
+llmCalls = 0;
+check("owner: без цифр/слов про учёбу классификатор не зовём", (await S.handleStudyMessage("как дела, расскажи анекдот")) === null && llmCalls === 0);
+MOCK_INTENT = { intent: "study_report", confidence: 0.9, subject: "math", type: "problems", volume: 29, unit: "задач", minutes: null, flows: 3, difficulty: null, newTopic: null, estimateMin: null, homeworkRef: null };
+let rep = await S.handleStudyMessage("сделал 29 по математике, 3 flow");
+const stAfter = S.loadStudy();
+check("owner: отчёт записан, ДЗ закрыто, формат ответа", rep.kind === "study_report" && /^Записал\.\nMath\/problems: 29 задач, 90 мин ≈3\.1 мин\/задачу ≈19\/час\.\nBaseline: ~3\.1 мин\/задачу\. Confidence: low — 1 datapoint\./.test(rep.reply.replace("Math/", "Math/")) && /ДЗ h\d+ закрыто/.test(rep.reply) && stAfter.homework.find((h) => h.subject === "math").status === "done");
+MOCK_INTENT = { intent: "study_report", confidence: 0.9, subject: "physics", type: "problems", volume: 70, unit: "задач", minutes: 150, flows: null, difficulty: "hard", newTopic: false, estimateMin: 120 };
+rep = await S.handleStudyMessage("физика 70 задач 150 минут, я думал на 2 часа");
+check("owner: строка про ошибку оценки", /Оценка была 120 мин, по факту 150 \(×1\.25\)/.test(rep.reply) && /Physics\/problems: 70 задач, 150 мин ≈2\.14 мин\/задачу ≈28\/час\./.test(rep.reply));
+MOCK_INTENT = { intent: "study_report", confidence: 0.9, subject: "physics", volume: 5, minutes: null, flows: null };
+check("owner: отчёт без времени -> Claude", (await S.handleStudyMessage("физика 5 задач")) === null);
+MOCK_INTENT = { intent: "study_report", confidence: 0.3, subject: "math", volume: 5, minutes: 20 };
+check("owner: низкая уверенность -> Claude", (await S.handleStudyMessage("математика 5 задач 20 мин")) === null);
+MOCK_INTENT = { intent: "other", confidence: 0.95 };
+check("owner: other -> Claude", (await S.handleStudyMessage("перенеси встречу на 5 вечера")) === null);
+MOCK_INTENT = { intent: "estimate_question", confidence: 0.9, items: [{ subject: "physics", type: "problems", volume: 30, unit: "задач" }, { subject: "english", type: "reading", volume: 3, unit: "страниц" }] };
+rep = await S.handleStudyMessage("сколько займёт 30 задач по физике и 3 страницы reading", { nowMs });
+check("owner: вопрос об оценке — ожидание, диапазон, безопасный срок, время окончания", rep.kind === "estimate_question" && /^Ожидаю: ~\d+ мин/.test(rep.reply) && /Физика\/problems, 30 задач: ~\d+ мин \(\d+–\d+\)/.test(rep.reply) && /Английский\/reading, 3 страниц: нет данных/.test(rep.reply) && /Безопасный срок: ~\d+ мин \(\+\d+%\)/.test(rep.reply) && /Если начать сейчас \(09:00\): закончу ~\d\d:\d\d, с запасом ~\d\d:\d\d/.test(rep.reply) && /Confidence:/.test(rep.reply));
+L.setCheapLLM(async () => {
+  throw new Error("нет LLM");
+});
+check("owner: классификатор упал -> null (обычный Джарвис)", (await S.handleStudyMessage("сделал 30 задач, 3 flow")) === null);
+L.setCheapLLM(null);
+L.setLLMTransport();
 
 fs.rmSync(tmpState, { force: true });
 fs.rmSync(process.env.UNTRA_DATA_DIR, { recursive: true, force: true });

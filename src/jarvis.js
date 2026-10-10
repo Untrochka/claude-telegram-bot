@@ -23,7 +23,12 @@ export const TASK_KEYS = [
   "discovery_report",
   "weekly",
   "evening_plan",
+  "study_checkin",
 ];
+
+// Предметы учёбы (study.js) — здесь, чтобы jarvis.js не зависел от study.js.
+export const STUDY_SUBJECTS = ["physics", "math", "english", "programming"];
+export const WATCH_KINDS = ["general", "study"];
 
 const WD = [1, 2, 3, 4, 5];
 const text = (id, label, days, time, msg, extra = {}) => ({ id, label, days, time, work: false, enabled: true, type: "text", text: msg, ...extra });
@@ -47,6 +52,7 @@ export const DEFAULT_REMINDERS = [
   task("discovery_report", "Отчёт по каналам для комментариев", [1], "12:00", "discovery_report"),
   task("weekly", "Недельный отчёт", [1], "11:05", "weekly"),
   task("evening_plan", "План на завтра", [1, 2, 3, 4], "20:45", "evening_plan", { window: 15 }),
+  task("study_checkin", "Проверка ДЗ", [1, 2, 3, 4, 5, 6], "20:30", "study_checkin", { work: false, hidden: true, window: 120 }),
   text("school_rem", "Школа", WD, "08:15", "🏫 Через 15 минут школа. Время собираться.", { hidden: true, window: 15 }),
   text("physics_rem", "Физика", [1, 3, 5], "14:15", "⚛️ Через 15 минут физика. Удачи на занятии!", { hidden: true, window: 15 }),
   text("math_rem", "Математика", [1, 3, 5], "16:00", "📐 Пора выходить на математику, дорога займёт около часа.", { hidden: true, window: 20 }),
@@ -58,6 +64,7 @@ export const DEFAULT_REMINDERS = [
 export function defaultJarvis() {
   return {
     version: 1,
+    migrated: ["study_checkin"],
     address: "Мастер",
     style: ["коротко и просто"],
     rules: { quietHours: "23:30-08:00", noWorkAfter: "21:00", dayOffWork: [6], dayOffAll: [0] },
@@ -115,6 +122,14 @@ export function reminderErrors(r) {
   return e;
 }
 
+// kind: "general" (по умолчанию) | "study"; subject — предмет для чатов учёбы.
+function watchChatErrors(c) {
+  const e = [];
+  if (c.kind !== undefined && !WATCH_KINDS.includes(c.kind)) e.push(`watch.chats ${c.query}: kind — ${WATCH_KINDS.join(" или ")}`);
+  if (c.subject !== undefined && !STUDY_SUBJECTS.includes(c.subject)) e.push(`watch.chats ${c.query}: subject — ${STUDY_SUBJECTS.join(", ")}`);
+  return e;
+}
+
 // Общая проверка всего файла.
 export function validateJarvis(j) {
   const e = [];
@@ -150,6 +165,7 @@ export function validateJarvis(j) {
   if (!(Number.isInteger(w.intervalMin) && w.intervalMin >= 5 && w.intervalMin <= 1440)) e.push("watch.intervalMin — минуты 5–1440");
   if (!TIME_RE.test(String(w.from || "")) || !TIME_RE.test(String(w.to || ""))) e.push("watch.from/to — ЧЧ:ММ");
   if (!Array.isArray(w.chats) || !w.chats.every((c) => isStr(c?.query, 100))) e.push("watch.chats — список {query}");
+  else e.push(...w.chats.flatMap(watchChatErrors));
   if (!Array.isArray(w.important) || !w.important.every((s) => isStr(s, 100))) e.push("watch.important — список строк");
   return e;
 }
@@ -159,7 +175,22 @@ function withDefaults(j) {
   const d = defaultJarvis();
   const out = { ...d, ...j, rules: { ...d.rules, ...(j.rules || {}) }, watch: { ...d.watch, ...(j.watch || {}) } };
   out.version = 1;
+  out.migrated = j.migrated; // не из дефолтов: у старого файла флага нет, и миграция должна сработать
   return out;
+}
+
+// Разовые миграции старых файлов: добавляем новое напоминание один раз (флаг migrated),
+// чтобы удалённое владельцем потом не появлялось снова. -> true, если что-то поменяли.
+function migrate(j) {
+  j.migrated = Array.isArray(j.migrated) ? j.migrated : [];
+  if (j.migrated.includes("study_checkin")) return false;
+  j.migrated.push("study_checkin");
+  if (!j.reminders.some((r) => r.id === "study_checkin")) j.reminders.push(JSON.parse(JSON.stringify(DEFAULT_REMINDERS.find((r) => r.id === "study_checkin"))));
+  return true;
+}
+
+export function resetJarvisCache() {
+  cache = { obj: null, mtime: 0, checkedAt: 0 };
 }
 
 // ---------- чтение / запись ----------
@@ -196,6 +227,15 @@ export function loadJarvis() {
     const parsed = withDefaults(JSON.parse(readSystemFile(JARVIS_FILE)));
     const errors = validateJarvis(parsed);
     if (errors.length) throw new Error(errors.slice(0, 3).join("; "));
+    if (migrate(parsed)) {
+      try {
+        saveJarvis(parsed, "jarvis-migrate");
+      } catch (e) {
+        console.error("[jarvis] Не смог записать миграцию:", e.message);
+        cache = { obj: parsed, mtime, checkedAt: now };
+      }
+      return parsed;
+    }
     cache = { obj: parsed, mtime, checkedAt: now };
     return parsed;
   } catch (err) {
@@ -246,13 +286,16 @@ function describe(list, v) {
   if (list === "reminders") return `напоминание ${v.id} (${daysText(v.days)} ${v.time}${v.enabled === false ? ", выкл" : ""})`;
   if (list === "schedule") return `расписание «${v.title}» (${daysText(v.days)} ${v.from}–${v.to})`;
   if (list === "tasks") return `задача «${v.text}»${v.due ? ` до ${v.due}` : ""}`;
-  if (list === "watch.chats") return `слежу за чатом «${v.query}»`;
+  if (list === "watch.chats") return `слежу за чатом «${v.query}»${v.kind === "study" ? ` (учёба${v.subject ? `, ${v.subject}` : ""}: ДЗ → study.json)` : ""}`;
   return `стиль: «${v}»`;
 }
 
 function normalizeItem(list, value, existing) {
   if (list === "style") return typeof value === "string" ? value.trim() : value?.text;
-  if (list === "watch.chats") return { query: String(typeof value === "string" ? value : value?.query || "").trim().replace(/^@/, "") };
+  if (list === "watch.chats") {
+    const o = typeof value === "string" ? { query: value } : value || {};
+    return { query: String(o.query || "").trim().replace(/^@/, ""), ...(o.kind !== undefined && o.kind !== "general" ? { kind: o.kind } : {}), ...(o.subject !== undefined ? { subject: o.subject } : {}) };
+  }
   const v = { ...(value || {}) };
   if (!v.id) v.id = autoId({ reminders: "r_", schedule: "s_", tasks: "t_" }[list], existing);
   if (list === "reminders") {
@@ -309,7 +352,7 @@ export function applyJarvisOps(ops) {
     if (op.op === "add") {
       const item = normalizeItem(op.list, op.value, arr);
       const bad =
-        op.list === "reminders" ? reminderErrors(item) : op.list === "style" ? (isStr(item, 300) ? [] : ["style: нужна непустая строка"]) : op.list === "watch.chats" ? (isStr(item.query, 100) ? [] : ["watch.chats: нужен query"]) : [];
+        op.list === "reminders" ? reminderErrors(item) : op.list === "style" ? (isStr(item, 300) ? [] : ["style: нужна непустая строка"]) : op.list === "watch.chats" ? (isStr(item.query, 100) ? watchChatErrors(item) : ["watch.chats: нужен query"]) : [];
       if (bad.length) {
         errors.push(...bad);
         continue;
@@ -362,9 +405,15 @@ export function applyJarvisOps(ops) {
 
 // ---------- маркер [[JARVIS_SET: {...} или [...] ]] ----------
 const TAG = "[[JARVIS_SET:";
+// Все маркеры с JSON-операциями, которые скрываем от владельца (STUDY — см. study.js).
+const HIDDEN_TAGS = [TAG, "[[STUDY:"];
 
 // Балансировка скобок с учётом строк. -> [{ raw, value (объект/массив) | null }]
 export function extractJarvisSet(textIn) {
+  return extractTagged(textIn, TAG);
+}
+
+export function extractTagged(textIn, TAG) {
   const out = [];
   let from = 0;
   while (true) {
@@ -405,9 +454,11 @@ export function extractJarvisSet(textIn) {
 // Убирает маркеры (в том числе недописанный хвост в стриме).
 export function stripJarvisSet(textIn) {
   let out = textIn;
-  for (const m of extractJarvisSet(out)) out = out.replace(m.raw, "");
-  const at = out.indexOf(TAG);
-  if (at !== -1) out = out.slice(0, at);
+  for (const tag of HIDDEN_TAGS) {
+    for (const m of extractTagged(out, tag)) out = out.replace(m.raw, "");
+    const at = out.indexOf(tag);
+    if (at !== -1) out = out.slice(0, at);
+  }
   return out;
 }
 
@@ -427,6 +478,6 @@ export function jarvisPromptText(j = loadJarvis()) {
     `Расписание владельца:\n${j.schedule.map((s) => `- ${s.id} · ${s.title}: ${daysText(s.days)} ${s.from}–${s.to}`).join("\n") || "—"}`,
     `Напоминания (id · дни время · тип):\n${rem || "—"}`,
     `Важные задачи:\n${j.tasks.map((t) => `- ${t.id}${t.important ? " (важно)" : ""}: ${t.text}${t.due ? ` — до ${t.due}` : ""}`).join("\n") || "—"}`,
-    `Слежу за чатами: каждые ${w.intervalMin} мин, ${w.from}–${w.to}. Чаты: ${w.chats.map((c) => c.query).join(", ") || "нет"}. Важное: ${w.important.join("; ")}.`,
+    `Слежу за чатами: каждые ${w.intervalMin} мин, ${w.from}–${w.to}. Чаты: ${w.chats.map((c) => `${c.query}${c.kind === "study" ? ` [учёба${c.subject ? `:${c.subject}` : ""}]` : ""}`).join(", ") || "нет"}. Важное: ${w.important.join("; ")}.`,
   ].join("\n");
 }

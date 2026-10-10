@@ -87,6 +87,7 @@ import {
 import { runRedditDigest, handleRedditCallback, applyRedditRewrite } from "./reddit.js";
 import { plannerTick, handlePlanCallback, morningBriefText } from "./planner.js";
 import { applyJarvisOps } from "./jarvis.js";
+import { applyStudyOps, handleStudyMessage } from "./study.js";
 import { watcherTick } from "./watcher.js";
 import { applyDraftRewrite, clientRulesText, clientCardText, clientButtons, postButtons } from "./rewrite.js";
 import { localRoute, logEvent, LOCAL_ACK, memoryForAgents, findCommentByText, botStateText } from "./team.js";
@@ -1040,6 +1041,32 @@ async function applyJarvisSets(chatId, sets, { blocked = false } = {}) {
   }
 }
 
+// Учёба из маркера [[STUDY]]: те же ограничения, что у JARVIS_SET (только личный ход Мастера, без чужих текстов).
+async function applyStudySets(chatId, sets, { blocked = false } = {}) {
+  if (!sets.length) return;
+  if (blocked) {
+    await sendMessage(chatId, "⚠️ Учёбу не менял: в этом ходе я читал чужую переписку или ход начал сам бот. Попроси отдельным сообщением.");
+    return;
+  }
+  for (const ops of sets) {
+    if (!ops) {
+      await sendMessage(chatId, "⚠️ Учёбу не изменил: маркер с неверным JSON.");
+      continue;
+    }
+    try {
+      const res = applyStudyOps(ops);
+      if (res.ok) {
+        addBotNote(`Учёба изменена: ${res.summary}`);
+        await sendMessage(chatId, `✅ ${res.summary}`);
+        for (const n of res.notices) await sendMessage(chatId, n);
+      } else await sendMessage(chatId, `⚠️ Учёбу не изменил:\n${res.errors.map((e) => `• ${e}`).join("\n")}`);
+    } catch (err) {
+      console.error("[bot] STUDY:", err.message);
+      await sendMessage(chatId, `⚠️ Учёбу не изменил: ${err.message}`);
+    }
+  }
+}
+
 // opts.auto — ход начат ботом, а не Мастером (настройки по маркеру не применяем).
 async function secretaryTurn(chatId, text, images = [], opts = {}) {
   const chatKey = `${SECRETARY_CHAT_PREFIX}${chatId}`;
@@ -1048,7 +1075,7 @@ async function secretaryTurn(chatId, text, images = [], opts = {}) {
   const stopTyping = keepTyping(chatId);
   const streamer = createStreamer(chatId, { transform: visibleRaphaelText });
   try {
-    const { text: reply, notes, rewrites, actions, writes, crmLogs, crmBatches, sendQueues, jarvisSets, foreignLoaded } = await raphaelTurn({
+    const { text: reply, notes, rewrites, actions, writes, crmLogs, crmBatches, sendQueues, jarvisSets, studySets, foreignLoaded } = await raphaelTurn({
       chatKey,
       text,
       images,
@@ -1071,6 +1098,7 @@ async function secretaryTurn(chatId, text, images = [], opts = {}) {
     for (const b of crmBatches || []) await sendCrmBatchCard(chatId, b);
     for (const q of sendQueues || []) await sendQueueCard(chatId, q);
     await applyJarvisSets(chatId, jarvisSets || [], { blocked: opts.auto || foreignLoaded });
+    await applyStudySets(chatId, studySets || [], { blocked: opts.auto || foreignLoaded });
     for (const rw of rewrites || []) {
       const ok = await applyDraftRewrite(rw.draftId, rw.instruction);
       if (!ok) await sendMessage(chatId, `Черновик #${rw.draftId} уже не актуален.`);
@@ -1453,6 +1481,26 @@ async function handlePersonalMessage(msg) {
     if (LOCAL_ACK[route.action]) await sendMessage(chatId, LOCAL_ACK[route.action]);
     await runRaphaelAction(chatId, { name: route.action, arg: route.arg });
     return;
+  }
+
+  // Отчёт об учёбе и вопрос «сколько займёт» — Groq + код, без Claude. Всё сомнительное идёт Джарвису.
+  if (!images.length && !hasMedia(msg) && !msg.reply_to_message && text.length <= 400) {
+    let study = null;
+    try {
+      study = await handleStudyMessage(text);
+    } catch (err) {
+      console.warn("[bot] Учёба локально не вышла, отдаю Джарвису:", err.message);
+    }
+    if (study) {
+      const chatKey = `${SECRETARY_CHAT_PREFIX}${chatId}`;
+      pushHistory(chatKey, "azizhon", text);
+      pushHistory(chatKey, "assistant", study.reply);
+      logEvent(`Мастер: ${text.slice(0, 120)}`);
+      logEvent(`Бот (учёба, без Claude): ${study.reply.replace(/\s+/g, " ").slice(0, 160)}`);
+      console.log(`[bot] Учёба локально без Claude: ${study.kind}`);
+      await sendMessage(chatId, study.reply);
+      return;
+    }
   }
 
   await secretaryTurn(chatId, text, images);

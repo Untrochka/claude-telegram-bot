@@ -20,6 +20,7 @@ import { runRedditDigest } from "./reddit.js";
 import { isMtprotoReady } from "./mtproto.js";
 import { pickCalm } from "./calm.js";
 import { loadJarvis, toMin, inRange, defaultWork } from "./jarvis.js";
+import { checkinText } from "./study.js";
 
 // Память Мастера — через провайдера (team.js импортирует planner.js).
 let memoryProvider = () => "";
@@ -344,6 +345,11 @@ const RUNNERS = {
     if (t) await sendMessage(config.ownerTelegramId, t);
   },
   weekly: () => sendMessage(config.ownerTelegramId, weeklyReportText()),
+  // Без Claude: простой текст; если спрашивать не о чем — молчим.
+  study_checkin: async () => {
+    const t = checkinText();
+    if (t) await sendMessage(config.ownerTelegramId, t);
+  },
 };
 export const TASK_RUNNER_KEYS = Object.keys(RUNNERS);
 

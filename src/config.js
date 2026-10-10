@@ -59,6 +59,9 @@ export const config = {
   // расшифровывается, бот просто сообщает о голосовом, как раньше.
   groqApiKey: (process.env.GROQ_API_KEY || "").trim(),
   groqFilterModel: (process.env.GROQ_FILTER_MODEL || "llama-3.1-8b-instant").trim(),
+  // Дешёвый маршрутизатор llm.js: быстрая и «умная» модели Groq (лимиты не зашиты в код — читаются из заголовков ответа).
+  groqFastModel: (process.env.GROQ_FAST_MODEL || process.env.GROQ_FILTER_MODEL || "llama-3.1-8b-instant").trim(),
+  groqSmartModel: (process.env.GROQ_SMART_MODEL || "llama-3.3-70b-versatile").trim(),
   groqWhisperModel: (process.env.GROQ_WHISPER_MODEL || "whisper-large-v3").trim(),
   // Модель одна на всё — Opus 5.5 (и CLI, и API). Старые CLAUDE_MODEL_SMART/
   // FAST/FILTER и ANTHROPIC_MODEL больше не читаются.
